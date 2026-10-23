@@ -105,7 +105,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans text-slate-100">
+    <div className="flex h-screen w-screen overflow-hidden bg-gradient-to-br from-[#EEF2F7] to-[#F4F7FC] font-sans text-slate-800 antialiased selection:bg-indigo-600 selection:text-white">
       {/* Left Sidebar for Ingestion and Document Storage */}
       <Sidebar
         documents={documents}
@@ -115,7 +115,7 @@ export default function App() {
       />
 
       {/* Main Workspace Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
+      <div className="flex-1 flex flex-col h-full overflow-hidden bg-transparent">
         <Header
           docCount={documents.length}
           isConnected={isConnected}

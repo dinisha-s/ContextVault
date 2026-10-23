@@ -4,26 +4,101 @@
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100;
+    background: linear-gradient(135deg, #EEF2F7 0%, #F4F7FC 100%);
+    color: #1E293B;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
 
-/* Custom Sleek Scrollbar */
+/* Custom Soft-UI Neumorphic Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #EEF2F7;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #CBD5E1;
   border-radius: 9999px;
+  border: 2px solid #EEF2F7;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #94A3B8;
+}
+
+/* Neumorphic Component Classes */
+@layer components {
+  /* Raised Soft Card */
+  .neu-card {
+    background: #EEF2F7;
+    box-shadow: 8px 8px 18px #CBD5E1, -8px -8px 18px #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.85);
+  }
+
+  /* Compact Raised Soft Card */
+  .neu-card-sm {
+    background: #EEF2F7;
+    box-shadow: 4px 4px 10px #CBD5E1, -4px -4px 10px #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.9);
+  }
+
+  /* Inset / Pressed Surface (Inputs, dropzones, containers) */
+  .neu-inset {
+    background: #EEF2F7;
+    box-shadow: inset 3px 3px 6px #CBD5E1, inset -3px -3px 6px #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+  }
+
+  /* Compact Inset Surface */
+  .neu-inset-sm {
+    background: #EEF2F7;
+    box-shadow: inset 2px 2px 4px #CBD5E1, inset -2px -2px 4px #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+  }
+
+  /* Secondary Button / Convex Surface with Active Depress Effect */
+  .neu-btn-secondary {
+    background: #EEF2F7;
+    box-shadow: 4px 4px 10px #CBD5E1, -4px -4px 10px #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .neu-btn-secondary:hover {
+    box-shadow: 5px 5px 12px #CBD5E1, -5px -5px 12px #FFFFFF;
+  }
+
+  .neu-btn-secondary:active {
+    box-shadow: inset 2px 2px 5px #CBD5E1, inset -2px -2px 5px #FFFFFF;
+    transform: scale(0.985);
+  }
+
+  /* Primary Action Button with Gradient & Soft Drop Shadow */
+  .neu-btn-primary {
+    background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
+    box-shadow: 4px 4px 14px rgba(37, 99, 235, 0.35), -2px -2px 8px #FFFFFF;
+    transition: all 0.25s ease;
+  }
+
+  .neu-btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, #1D4ED8 0%, #4338CA 100%);
+    box-shadow: 6px 6px 18px rgba(37, 99, 235, 0.45), -3px -3px 10px #FFFFFF;
+    transform: translateY(-1px);
+  }
+
+  .neu-btn-primary:active:not(:disabled) {
+    transform: translateY(0) scale(0.985);
+    box-shadow: 2px 2px 8px rgba(37, 99, 235, 0.35);
+  }
+
+  /* Pill / Chip Badge */
+  .neu-chip {
+    background: #EEF2F7;
+    box-shadow: 2px 2px 6px #CBD5E1, -2px -2px 6px #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.8);
+  }
 }
