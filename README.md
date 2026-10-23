@@ -51,19 +51,19 @@ flowchart TD
         Fallback["Zero-Dependency Grounded Synthesizer"]
     end
 
-    UploadComp -->|Multipart FormData| API
+    UploadComp -->|"Multipart FormData"| API
     API --> Parser
     Parser --> Chunker
     Chunker --> Embedder
-    Embedder -->|Dense Vectors| HNSW
-    Chunker -->|Metadata| MetaStore
+    Embedder -->|"Dense Vectors"| HNSW
+    Chunker -->|"Metadata"| MetaStore
 
-    ChatComp -->|POST /chat {query}| API
-    API -->|Vectorize Query| Embedder
-    Embedder -->|Cosine Similarity Search| HNSW
-    HNSW -->|Top-K Chunks + Metadata| API
-    API -->|Prompt + Context Injection| LLM
-    LLM -->|Grounded Answer + Citations| ChatComp
+    ChatComp -->|"POST /chat (User Query)"| API
+    API -->|"Vectorize Query"| Embedder
+    Embedder -->|"Cosine Similarity Search"| HNSW
+    HNSW -->|"Top-K Chunks + Metadata"| API
+    API -->|"Prompt + Context Injection"| LLM
+    LLM -->|"Grounded Answer + Citations"| ChatComp
 ```
 
 ---
