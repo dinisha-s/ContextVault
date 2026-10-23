@@ -172,11 +172,60 @@ ContextVault/
 
 ---
 
+## 🚀 Cloud Deployment Guide
+
+ContextVault can be deployed in two convenient ways: as a **Single Full-Stack Container** (easiest, free tier friendly, zero CORS) or via **Split Deployment** (Vercel + Render).
+
+### Method 1: 1-Click Cloud Deployment via Docker (Recommended)
+
+Thanks to the multi-stage [`Dockerfile`](file:///c:/Users/LoQ/OneDrive/Documents/ContextVault/Dockerfile), the React frontend and FastAPI backend build into a single cohesive container where FastAPI serves both API routes and static frontend assets:
+
+#### A. Deploy to Render (Free Tier)
+1. Push this repository to your **GitHub** account.
+2. Sign in to [Render.com](https://render.com) and click **New + > Web Service**.
+3. Connect your `ContextVault` GitHub repository.
+4. Select **Docker** as the runtime (Render will automatically detect `Dockerfile` or [`render.yaml`](file:///c:/Users/LoQ/OneDrive/Documents/ContextVault/render.yaml)).
+5. Under Environment Variables:
+   - `PORT`: `8000`
+   - *(Optional)* `OPENAI_API_KEY`: `sk-...`
+6. Click **Create Web Service**. Within a few minutes, your live URL will be active!
+
+#### B. Deploy to Railway or Fly.io
+- **Railway**: Click **New Project > Deploy from GitHub repo > Select ContextVault**. Railway detects the `Dockerfile` and deploys automatically.
+- **Fly.io**: Run `fly launch` in your terminal and select default Docker deployment.
+
+---
+
+### Method 2: Split Cloud Deployment (Vercel + Render)
+
+- **Frontend on Vercel:**
+  1. Import the `/frontend` subfolder on [Vercel](https://vercel.com).
+  2. Set Framework Preset to **Vite**.
+  3. Add environment variable: `VITE_API_BASE_URL=https://your-backend.onrender.com`.
+  4. Click **Deploy**.
+
+- **Backend on Render/Railway:**
+  1. Point the web service root directory to `/backend`.
+  2. Build Command: `pip install -r requirements.txt`.
+  3. Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+
+---
+
+### Method 3: Local Docker Compose
+
+Run the entire workstation locally in an isolated container:
+```bash
+docker compose up --build
+```
+Access the application at `http://localhost:8000`.
+
+---
+
 ## 🔍 API Endpoints Reference
 
 | Method | Endpoint | Description | Payload / Parameters |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/` | Health check & service info | None |
+| `GET` | `/health` | Health check & service readiness | None |
 | `GET` | `/documents` | Lists all indexed documents & chunk metrics | None |
 | `POST` | `/upload` | Ingests and vectorizes `.pdf`, `.md`, or `.txt` file | Multipart `file: UploadFile` |
 | `POST` | `/chat` | Executes semantic search and grounded answering | JSON `{"query": "...", "top_k": 4}` |

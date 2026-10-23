@@ -124,8 +124,9 @@ def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tupl
     )
     return "\n".join(summary_lines), "ContextVault Grounded Fallback"
 
-@app.get("/")
-def root():
+@app.get("/health")
+@app.get("/api/health")
+def health_check():
     return {
         "status": "online",
         "service": "ContextVault RAG Backend",
@@ -205,6 +206,12 @@ def clear_knowledge_base():
     if not success:
         raise HTTPException(status_code=500, detail="Failed to reset vector database")
     return {"status": "Vector database and cache reset successfully"}
+
+# Serve frontend production bundle if built
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  contextvault:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: contextvault-app
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - LLM_PROVIDER=auto
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+    volumes:
+      - ./backend/data/chroma_db:/app/backend/data/chroma_db
+      - ./backend/data/uploads:/app/backend/data/uploads
+    restart: unless-stopped
