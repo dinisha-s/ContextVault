@@ -150,8 +150,13 @@ def get_indexed_documents() -> List[Dict[str, Any]]:
     """
     Returns unique documents and summary stats currently stored in the vector store.
     """
-    vector_store = get_vector_store()
+    # Fast path: if vector database has not been initialized yet, return immediately
+    chroma_db_file = PERSIST_DIRECTORY / "chroma.sqlite3"
+    if not chroma_db_file.exists():
+        return []
+
     try:
+        vector_store = get_vector_store()
         data = vector_store.get()
         metadatas = data.get("metadatas", [])
         if not metadatas:

@@ -34,7 +34,7 @@ export default function App() {
 
   useEffect(() => {
     fetchDocuments();
-    const interval = setInterval(fetchDocuments, 8000);
+    const interval = setInterval(fetchDocuments, 20000);
     return () => clearInterval(interval);
   }, []);
 

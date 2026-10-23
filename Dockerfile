@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt ./backend/
 RUN pip install --no-cache-dir -r ./backend/requirements.txt
 
+# Pre-cache sentence-transformers weights during build for instantaneous cold-starts
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Copy backend code
 COPY backend/ ./backend/
 
