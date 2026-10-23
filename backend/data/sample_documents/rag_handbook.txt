@@ -1,0 +1,17 @@
+RAG (Retrieval-Augmented Generation) Architectural Reference Guide
+
+1. Chunking Dynamics:
+   - Chunk Size: Controls semantic granularity. Small chunks (200-400 chars) yield accurate cosine similarity matches but risk losing broader paragraph context. Larger chunks (800-1500 chars) capture holistic arguments but introduce noise into embedding representations.
+   - Chunk Overlap: Typically set between 10% to 20% of chunk size. Overlap ensures that key phrases spanning chunk boundaries do not suffer semantic clipping.
+
+2. Vector Space & Embeddings:
+   - Dense vector embeddings map arbitrary text strings into high-dimensional geometric spaces (e.g., 384 dimensions for all-MiniLM-L6-v2, 1536 for text-embedding-3-small).
+   - Distance Metrics: Cosine similarity measures angle divergence regardless of magnitude, making it ideal for normalized text length comparisons. Euclidean distance measures geometric distance, while Dot Product measures magnitude-weighted similarity.
+
+3. Vector Database Indexing:
+   - HNSW (Hierarchical Navigable Small World) provides approximate nearest neighbor (ANN) search with logarithmic time complexity O(log N).
+   - ChromaDB manages HNSW graphs under SQLite metadata storage, enabling persistent local vector retrieval without requiring hosted cloud clusters.
+
+4. Hallucination Mitigation:
+   - Strict Grounding System Prompts: Directing the LLM to admit ignorance if the query cannot be satisfied strictly by the retrieved context.
+   - Source Attribution: Attaching metadata badges with file names, chunk indices, and page numbers directly to generated responses.
