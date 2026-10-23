@@ -105,7 +105,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-gradient-to-br from-[#EEF2F7] to-[#F4F7FC] font-sans text-slate-800 antialiased selection:bg-indigo-600 selection:text-white">
+    <div className="flex h-screen w-screen overflow-hidden bg-gradient-to-br from-[#F5F7F5] to-[#EBF1EC] font-sans text-[#1B3B32] antialiased selection:bg-[#0C3B2E] selection:text-[#FFBA00]">
       {/* Left Sidebar for Ingestion and Document Storage */}
       <Sidebar
         documents={documents}

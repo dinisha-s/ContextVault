@@ -2,103 +2,141 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Design Tokens: Organic Forest & Earthy Bronze Palette */
+  --color-primary: #0C3B2E;       /* Deep Forest Green */
+  --color-secondary: #6D9773;     /* Sage / Muted Green */
+  --color-accent: #FFBA00;        /* Warm Amber / Gold */
+  --color-border: #BB8A52;        /* Earthy Bronze / Caramel */
+
+  /* Neutral Backgrounds & Tints */
+  --color-bg-base: #F5F7F5;
+  --color-bg-surface: #EBF1EC;
+  --color-shadow-dark: #D0DDD2;
+  --color-shadow-light: #FFFFFF;
+
+  /* Typography */
+  --color-text-heading: #0C3B2E;  /* WCAG AAA compliant contrast on light bg */
+  --color-text-body: #1B3B32;
+  --color-text-muted: #516D56;
+}
+
 @layer base {
   body {
-    background: linear-gradient(135deg, #EEF2F7 0%, #F4F7FC 100%);
-    color: #1E293B;
+    background: linear-gradient(135deg, #F5F7F5 0%, #EBF1EC 100%);
+    color: var(--color-text-body);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::selection {
+    background-color: #0C3B2E;
+    color: #FFBA00;
   }
 }
 
-/* Custom Soft-UI Neumorphic Scrollbar */
+/* Custom Earth-Toned Neumorphic Scrollbar */
 ::-webkit-scrollbar {
   width: 7px;
   height: 7px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #EEF2F7;
+  background: #EBF1EC;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #CBD5E1;
+  background: #C2D6C6;
   border-radius: 9999px;
-  border: 2px solid #EEF2F7;
+  border: 2px solid #EBF1EC;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
+  background: #6D9773;
 }
 
-/* Neumorphic Component Classes */
+/* Neumorphic Component System */
 @layer components {
   /* Raised Soft Card */
   .neu-card {
-    background: #EEF2F7;
-    box-shadow: 8px 8px 18px #CBD5E1, -8px -8px 18px #FFFFFF;
-    border: 1px solid rgba(255, 255, 255, 0.85);
+    background: #F5F8F5;
+    box-shadow: 7px 7px 16px #D0DDD2, -7px -7px 16px #FFFFFF;
+    border: 1px solid rgba(187, 138, 82, 0.22);
   }
 
   /* Compact Raised Soft Card */
   .neu-card-sm {
-    background: #EEF2F7;
-    box-shadow: 4px 4px 10px #CBD5E1, -4px -4px 10px #FFFFFF;
-    border: 1px solid rgba(255, 255, 255, 0.9);
+    background: #F5F8F5;
+    box-shadow: 3px 3px 8px #D0DDD2, -3px -3px 8px #FFFFFF;
+    border: 1px solid rgba(187, 138, 82, 0.25);
   }
 
-  /* Inset / Pressed Surface (Inputs, dropzones, containers) */
+  /* Inset / Pressed Surface */
   .neu-inset {
-    background: #EEF2F7;
-    box-shadow: inset 3px 3px 6px #CBD5E1, inset -3px -3px 6px #FFFFFF;
-    border: 1px solid rgba(255, 255, 255, 0.6);
+    background: #F3F6F3;
+    box-shadow: inset 3px 3px 6px #D0DDD2, inset -3px -3px 6px #FFFFFF;
+    border: 1px solid rgba(109, 151, 115, 0.25);
   }
 
   /* Compact Inset Surface */
   .neu-inset-sm {
-    background: #EEF2F7;
-    box-shadow: inset 2px 2px 4px #CBD5E1, inset -2px -2px 4px #FFFFFF;
-    border: 1px solid rgba(255, 255, 255, 0.5);
+    background: #F3F6F3;
+    box-shadow: inset 2px 2px 4px #D0DDD2, inset -2px -2px 4px #FFFFFF;
+    border: 1px solid rgba(109, 151, 115, 0.2);
   }
 
-  /* Secondary Button / Convex Surface with Active Depress Effect */
-  .neu-btn-secondary {
-    background: #EEF2F7;
-    box-shadow: 4px 4px 10px #CBD5E1, -4px -4px 10px #FFFFFF;
-    border: 1px solid rgba(255, 255, 255, 0.85);
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .neu-btn-secondary:hover {
-    box-shadow: 5px 5px 12px #CBD5E1, -5px -5px 12px #FFFFFF;
-  }
-
-  .neu-btn-secondary:active {
-    box-shadow: inset 2px 2px 5px #CBD5E1, inset -2px -2px 5px #FFFFFF;
-    transform: scale(0.985);
-  }
-
-  /* Primary Action Button with Gradient & Soft Drop Shadow */
+  /* Primary CTA Button: Deep Forest Green with Warm Amber Glow */
   .neu-btn-primary {
-    background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
-    box-shadow: 4px 4px 14px rgba(37, 99, 235, 0.35), -2px -2px 8px #FFFFFF;
+    background: linear-gradient(135deg, #0C3B2E 0%, #155A46 100%);
+    box-shadow: 4px 4px 14px rgba(12, 59, 46, 0.35), -2px -2px 8px #FFFFFF;
+    color: #FFFFFF;
+    border: 1px solid rgba(255, 186, 0, 0.2);
     transition: all 0.25s ease;
   }
 
   .neu-btn-primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, #1D4ED8 0%, #4338CA 100%);
-    box-shadow: 6px 6px 18px rgba(37, 99, 235, 0.45), -3px -3px 10px #FFFFFF;
+    background: linear-gradient(135deg, #104637 0%, #1A6C54 100%);
+    box-shadow: 6px 6px 18px rgba(12, 59, 46, 0.45), -3px -3px 10px #FFFFFF;
     transform: translateY(-1px);
   }
 
   .neu-btn-primary:active:not(:disabled) {
     transform: translateY(0) scale(0.985);
-    box-shadow: 2px 2px 8px rgba(37, 99, 235, 0.35);
+    box-shadow: 2px 2px 8px rgba(12, 59, 46, 0.35);
   }
 
-  /* Pill / Chip Badge */
-  .neu-chip {
-    background: #EEF2F7;
-    box-shadow: 2px 2px 6px #CBD5E1, -2px -2px 6px #FFFFFF;
-    border: 1px solid rgba(255, 255, 255, 0.8);
+  /* Secondary Button / Convex Surface with Earthy Bronze Border */
+  .neu-btn-secondary {
+    background: #F2F6F3;
+    box-shadow: 4px 4px 10px #D0DDD2, -4px -4px 10px #FFFFFF;
+    border: 1px solid rgba(187, 138, 82, 0.35);
+    color: #0C3B2E;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .neu-btn-secondary:hover {
+    box-shadow: 5px 5px 12px #D0DDD2, -5px -5px 12px #FFFFFF;
+    border-color: rgba(109, 151, 115, 0.6);
+  }
+
+  .neu-btn-secondary:active {
+    box-shadow: inset 2px 2px 4px #D0DDD2, inset -2px -2px 4px #FFFFFF;
+    transform: scale(0.985);
+  }
+
+  /* Warm Amber Pill Badge (High contrast: Deep Forest Green text on Amber) */
+  .neu-badge-amber {
+    background: #FFBA00;
+    color: #0C3B2E;
+    font-weight: 700;
+    box-shadow: 2px 2px 6px rgba(187, 138, 82, 0.3), -1px -1px 4px #FFFFFF;
+  }
+
+  /* Sage Muted Pill Badge */
+  .neu-badge-sage {
+    background: #E7EFE9;
+    color: #0C3B2E;
+    font-weight: 600;
+    border: 1px solid rgba(109, 151, 115, 0.35);
+    box-shadow: inset 1.5px 1.5px 3px #D0DDD2, inset -1.5px -1.5px 3px #FFFFFF;
   }
 }

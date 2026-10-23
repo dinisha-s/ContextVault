@@ -3,41 +3,41 @@ import { Database, FileText, Sparkles } from 'lucide-react';
 
 export default function Header({ docCount, isConnected, onOpenDocs }) {
   return (
-    <header className="h-16 px-6 bg-[#EEF2F7] border-b border-white/80 shadow-[0_4px_14px_rgba(203,213,225,0.45)] flex items-center justify-between z-10 select-none">
+    <header className="h-16 px-6 bg-[#F0F4F1] border-b border-[#BB8A52]/25 shadow-[0_4px_14px_rgba(208,221,210,0.45)] flex items-center justify-between z-10 select-none">
       <div className="flex items-center gap-3.5">
-        {/* Soft UI Raised Icon Box */}
-        <div className="w-9 h-9 rounded-xl bg-[#EEF2F7] shadow-[3px_3px_8px_#CBD5E1,-3px_-3px_8px_#FFFFFF] border border-white/80 flex items-center justify-center text-blue-600">
-          <Sparkles className="w-4 h-4 animate-pulse" />
+        {/* Soft UI Raised Icon Box with Deep Forest Green & Amber Sparkle */}
+        <div className="w-9 h-9 rounded-xl bg-[#F0F4F1] shadow-[3px_3px_7px_#D0DDD2,-3px_-3px_7px_#FFFFFF] border border-[#BB8A52]/25 flex items-center justify-center text-[#FFBA00]">
+          <Sparkles className="w-4 h-4 animate-pulse fill-[#FFBA00]/30 text-[#FFBA00]" />
         </div>
         <div>
-          <h2 className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-2">
+          <h2 className="text-sm font-bold text-[#0C3B2E] tracking-tight flex items-center gap-2">
             Active Knowledge Workspace
-            <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-[#EEF2F7] text-blue-600 shadow-[inset_1.5px_1.5px_3px_#CBD5E1,inset_-1.5px_-1.5px_3px_#FFFFFF] border border-white/60 font-semibold">
+            <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-[#FFBA00] text-[#0C3B2E] font-bold shadow-[1px_1px_3px_rgba(187,138,82,0.3)] border border-[#BB8A52]/30">
               RAG v1.0
             </span>
           </h2>
-          <p className="text-xs text-slate-500 font-medium">Grounded semantic search with local vector embeddings</p>
+          <p className="text-xs text-[#516D56] font-medium">Grounded semantic search with local vector embeddings</p>
         </div>
       </div>
 
       <div className="flex items-center gap-3.5 text-xs font-mono">
         {/* ChromaDB Status Pill */}
-        <div className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#EEF2F7] shadow-[3px_3px_7px_#CBD5E1,-3px_-3px_7px_#FFFFFF] border border-white/80 text-slate-700">
-          <Database className="w-3.5 h-3.5 text-blue-600" />
+        <div className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#F0F4F1] shadow-[3px_3px_7px_#D0DDD2,-3px_-3px_7px_#FFFFFF] border border-[#BB8A52]/25 text-[#1B3B32]">
+          <Database className="w-3.5 h-3.5 text-[#6D9773]" />
           <span>
             ChromaDB:{' '}
-            <strong className={`font-semibold ${isConnected ? 'text-emerald-600' : 'text-rose-500'}`}>
+            <strong className={`font-semibold ${isConnected ? 'text-[#0C3B2E]' : 'text-rose-600'}`}>
               {isConnected ? 'Connected' : 'Offline'}
             </strong>
           </span>
         </div>
 
         {/* Sources Counter Pill */}
-        <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#EEF2F7] shadow-[3px_3px_7px_#CBD5E1,-3px_-3px_7px_#FFFFFF] border border-white/80 text-slate-700">
-          <FileText className="w-3.5 h-3.5 text-blue-600" />
+        <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#F0F4F1] shadow-[3px_3px_7px_#D0DDD2,-3px_-3px_7px_#FFFFFF] border border-[#BB8A52]/25 text-[#1B3B32]">
+          <FileText className="w-3.5 h-3.5 text-[#BB8A52]" />
           <span>
             Indexed Sources:{' '}
-            <strong className="text-blue-600 font-bold">{docCount}</strong>
+            <strong className="text-[#0C3B2E] font-bold">{docCount}</strong>
           </span>
         </div>
       </div>
