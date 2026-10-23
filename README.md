@@ -1,5 +1,7 @@
 # 🧠 ContextVault | Personal AI Knowledge Assistant
 
+[![Live Demo](https://img.shields.io/badge/Demo-Live_on_Render-2ea44f?style=for-the-badge&logo=render&logoColor=white)](https://contextvault-vqlc.onrender.com)
+
 > **Full-Stack Local RAG & Document Intelligence Workstation**  
 > *Engineered an end-to-end Retrieval-Augmented Generation (RAG) platform enabling users to upload multi-format documents (PDFs, Markdown, TXT) and query them conversationally with verifiable, source-grounded citations.*
 
