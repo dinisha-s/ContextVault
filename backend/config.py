@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     # Model settings
     EMBEDDING_MODEL: str = Field(default="all-MiniLM-L6-v2", description="Sentence-Transformers embedding model")
+    RELEVANCE_THRESHOLD: float = Field(default=1.0, description="Max cosine distance threshold (0.0 to 2.0). Chunks with distance > threshold are excluded.")
 
     # LLM Provider configuration: auto | openai | ollama | extractive
     LLM_PROVIDER: str = Field(default="auto", description="LLM provider: auto | openai | ollama | extractive")

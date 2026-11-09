@@ -337,7 +337,7 @@ def chat_with_documents(
             answer=chat_intent_reply,
             sources=[],
             citations=[],
-            provider="ContextVault Conversational Agent",
+            provider="ContextVault Assistant",
             session_id=effective_session
         )
 
@@ -354,7 +354,7 @@ def chat_with_documents(
                 ),
                 sources=[],
                 citations=[],
-                provider="ContextVault Catalog Intelligence",
+                provider="ContextVault Catalog",
                 session_id=effective_session
             )
         
@@ -376,7 +376,7 @@ def chat_with_documents(
             answer=answer,
             sources=[d["filename"] for d in docs],
             citations=[],
-            provider="ContextVault Catalog Intelligence",
+            provider="ContextVault Catalog",
             session_id=effective_session
         )
 

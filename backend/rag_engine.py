@@ -78,13 +78,14 @@ def get_session_upload_dir(session_id: Any = "default") -> Path:
     return session_dir
 
 
-def get_vector_store(session_id: str = "default") -> Chroma:
+def get_vector_store(session_id: Any = "default") -> Chroma:
     embeddings = get_embeddings()
     collection_name = get_safe_collection_name(session_id)
     return Chroma(
         persist_directory=str(PERSIST_DIRECTORY),
         embedding_function=embeddings,
-        collection_name=collection_name
+        collection_name=collection_name,
+        collection_metadata={"hnsw:space": "cosine"}
     )
 
 
@@ -241,21 +242,26 @@ def query_rag(user_query: str, top_k: int = 4, session_id: str = "default") -> D
         docs = retriever.invoke(user_query) if hasattr(retriever, "invoke") else retriever.get_relevant_documents(user_query)
         scores = [0.0] * len(docs)
 
-    # Relevance filtering: L2 distance > 1.35 indicates unrelated noise
-    MAX_L2_DISTANCE_THRESHOLD = 1.35
+    # Relevance filtering: In Chroma cosine space (hnsw:space: cosine),
+    # score = cosine distance = 1 - cosine_similarity.
+    # Distance <= 1.0 indicates positive semantic alignment (similarity >= 0.0).
+    # Distance > 1.0 indicates orthogonal/unrelated noise.
+    MAX_COSINE_DISTANCE_THRESHOLD = getattr(settings, "RELEVANCE_THRESHOLD", 1.0)
 
     citations = []
     sources = set()
 
     for idx, doc in enumerate(docs):
         # Exclude chunks that are semantically unrelated to the user query
-        if idx < len(scores) and scores[idx] > MAX_L2_DISTANCE_THRESHOLD:
+        if idx < len(scores) and scores[idx] > MAX_COSINE_DISTANCE_THRESHOLD:
             continue
 
         src = doc.metadata.get("source", "Unknown Document")
         sources.add(src)
         page = doc.metadata.get("page_number", doc.metadata.get("page", None))
         chunk_idx = doc.metadata.get("chunk_index", idx)
+        cosine_distance = round(scores[idx], 4) if idx < len(scores) else None
+        cosine_similarity = round(max(0.0, 1.0 - scores[idx]), 4) if idx < len(scores) else None
 
         citations.append({
             "id": idx + 1,
@@ -263,7 +269,9 @@ def query_rag(user_query: str, top_k: int = 4, session_id: str = "default") -> D
             "page": page,
             "chunk_index": chunk_idx,
             "content": clean_extracted_text(doc.page_content, is_pdf=False),
-            "score": round(scores[idx], 4) if idx < len(scores) else None
+            "score": cosine_distance,
+            "similarity": cosine_similarity,
+            "metric": "cosine"
         })
 
     # Merge context with clean demarcations
