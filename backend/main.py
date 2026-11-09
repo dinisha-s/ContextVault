@@ -13,7 +13,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from typing import Optional, List
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Depends, Header, Security
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -25,6 +26,7 @@ from rag_engine import (
     get_indexed_documents,
     reset_vector_store,
     delete_document_by_name,
+    get_session_upload_dir,
     UPLOAD_DIR,
 )
 
@@ -47,10 +49,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(api_key: Optional[str] = Security(api_key_header)) -> bool:
+    """
+    Optional API Key protection. If settings.API_KEY is configured,
+    requests without a matching X-API-Key header receive HTTP 401 Unauthorized.
+    If settings.API_KEY is empty (default), authentication is disabled (local mode).
+    """
+    configured_key = settings.API_KEY.strip()
+    if configured_key:
+        if not api_key or api_key != configured_key:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or missing API Key. Provide a valid 'X-API-Key' header."
+            )
+    return True
+
+
+def get_current_session(x_session_id: Optional[str] = Header(None, alias="X-Session-ID")) -> str:
+    """
+    Extracts session identifier from 'X-Session-ID' header.
+    Defaults to 'default' for single-tenant backward compatibility.
+    """
+    if x_session_id and isinstance(x_session_id, str) and x_session_id.strip():
+        sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', x_session_id.strip())
+        return sanitized[:64] or "default"
+    return "default"
+
+
+def sanitize_error_detail(err: Exception) -> str:
+    """
+    Strips internal filesystem paths from error messages before exposing to clients.
+    """
+    msg = str(err)
+    # Strip Windows absolute paths
+    msg = re.sub(r'[A-Za-z]:\\[^:\s<>"\']+[\\]?', '[INTERNAL_PATH]', msg)
+    # Strip Unix absolute paths
+    msg = re.sub(r'/(?:[a-zA-Z0-9._-]+/)+[a-zA-Z0-9._-]+', '[INTERNAL_PATH]', msg)
+    return msg
+
+
+def resolve_session_id(session_id: object = None, current_session: object = None) -> str:
+    """
+    Safely resolves session identifier whether invoked via FastAPI dependency injection
+    or called directly in unit tests with default parameter objects (Query/Depends).
+    """
+    if isinstance(session_id, str) and session_id.strip():
+        return session_id.strip()
+    if isinstance(current_session, str) and current_session.strip():
+        return current_session.strip()
+    return "default"
+
 
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="User search query")
     top_k: Optional[int] = Field(default=4, ge=1, le=10, description="Number of results (1 to 10)")
+    session_id: Optional[str] = Field(default=None, max_length=64, description="Optional session identifier")
 
 
 class ChatResponse(BaseModel):
@@ -59,6 +115,7 @@ class ChatResponse(BaseModel):
     sources: List[str]
     citations: List[dict]
     provider: str
+    session_id: Optional[str] = None
 
 
 @app.get("/health")
@@ -85,27 +142,44 @@ def get_public_config():
         "max_upload_size_mb": settings.MAX_UPLOAD_SIZE_MB,
         "max_upload_size_bytes": settings.max_upload_size_bytes,
         "supported_formats": [".pdf", ".md", ".txt"],
+        "auth_required": bool(settings.API_KEY.strip()),
     }
 
 
 @app.get("/documents")
-def list_documents():
+def list_documents(
+    session_id: Optional[str] = Query(None),
+    current_session: str = Depends(get_current_session),
+    _: bool = Depends(verify_api_key)
+):
     """
-    Returns list of all documents indexed in the vector store.
+    Returns list of all documents indexed in the vector store for the active session.
     """
-    docs = get_indexed_documents()
-    return {"documents": docs, "total_documents": len(docs)}
+    effective_session = resolve_session_id(session_id, current_session)
+    docs = get_indexed_documents(session_id=effective_session)
+    return {
+        "documents": docs,
+        "total_documents": len(docs),
+        "session_id": effective_session
+    }
 
 
 @app.post("/upload")
-def upload_document(file: UploadFile = File(...)):
+def upload_document(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Query(None),
+    current_session: str = Depends(get_current_session),
+    _: bool = Depends(verify_api_key)
+):
     """
     Receives multi-format document (PDF, Markdown, TXT), validates content and size,
-    streams into server-generated UUID file, and indexes into ChromaDB.
+    streams into session-isolated UUID file, and indexes into ChromaDB.
     Enforces MAX_UPLOAD_SIZE_MB hard limit and runs in threadpool.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename cannot be empty")
+
+    effective_session = resolve_session_id(session_id, current_session)
 
     # Clean display filename and extract lowercase extension
     display_filename = Path(file.filename).name
@@ -118,9 +192,10 @@ def upload_document(file: UploadFile = File(...)):
             detail=f"Unsupported format '{file_ext}'. Allowed formats: {', '.join(allowed_extensions)}"
         )
 
-    # Store file under server-generated UUID to eliminate path traversal vulnerabilities
+    # Store file under server-generated UUID in session-isolated upload directory
+    target_upload_dir = get_session_upload_dir(effective_session)
     stored_filename = f"{uuid.uuid4().hex}{file_ext}"
-    saved_path = UPLOAD_DIR / stored_filename
+    saved_path = target_upload_dir / stored_filename
 
     total_bytes = 0
     max_bytes = settings.max_upload_size_bytes
@@ -153,13 +228,14 @@ def upload_document(file: UploadFile = File(...)):
             except UnicodeDecodeError:
                 raise HTTPException(status_code=400, detail="Invalid text file: file contains non-UTF-8 characters")
 
-        result = process_and_add_document(str(saved_path), display_filename)
+        result = process_and_add_document(str(saved_path), display_filename, session_id=effective_session)
         return {
             "status": "Indexed successfully",
             "filename": result["filename"],
             "chunks": result["chunk_count"],
             "characters": result["total_characters"],
-            "sha256": result.get("sha256")
+            "sha256": result.get("sha256"),
+            "session_id": effective_session
         }
     except HTTPException:
         if saved_path.exists():
@@ -168,7 +244,9 @@ def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         if saved_path.exists():
             saved_path.unlink()
-        raise HTTPException(status_code=400, detail=f"Ingestion Error: {str(e)}")
+        clean_detail = sanitize_error_detail(e)
+        logger.exception("Ingestion failed: %s", clean_detail)
+        raise HTTPException(status_code=400, detail=f"Ingestion Error: {clean_detail}")
 
 
 def check_conversational_intent(query: str) -> Optional[str]:
@@ -237,13 +315,19 @@ def is_document_catalog_query(query: str) -> bool:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat_with_documents(request: ChatRequest):
+def chat_with_documents(
+    request: ChatRequest,
+    current_session: str = Depends(get_current_session),
+    _: bool = Depends(verify_api_key)
+):
     """
-    Queries vector store for top matching semantic passages and produces an answer with citations.
-    Runs in threadpool (plain def) to keep event loop responsive.
+    Queries vector store for top matching semantic passages in the active session
+    and produces an answer with citations. Runs in threadpool.
     """
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    effective_session = resolve_session_id(request.session_id, current_session)
 
     # Conversational chit-chat & greeting routing (exact match only)
     chat_intent_reply = check_conversational_intent(request.query)
@@ -253,12 +337,13 @@ def chat_with_documents(request: ChatRequest):
             answer=chat_intent_reply,
             sources=[],
             citations=[],
-            provider="ContextVault Conversational Agent"
+            provider="ContextVault Conversational Agent",
+            session_id=effective_session
         )
 
     # Smart Routing: If user is explicitly asking to list documents
     if is_document_catalog_query(request.query):
-        docs = get_indexed_documents()
+        docs = get_indexed_documents(session_id=effective_session)
         if not docs:
             return ChatResponse(
                 query=request.query,
@@ -269,7 +354,8 @@ def chat_with_documents(request: ChatRequest):
                 ),
                 sources=[],
                 citations=[],
-                provider="ContextVault Catalog Intelligence"
+                provider="ContextVault Catalog Intelligence",
+                session_id=effective_session
             )
         
         doc_items = "\n".join(
@@ -290,11 +376,12 @@ def chat_with_documents(request: ChatRequest):
             answer=answer,
             sources=[d["filename"] for d in docs],
             citations=[],
-            provider="ContextVault Catalog Intelligence"
+            provider="ContextVault Catalog Intelligence",
+            session_id=effective_session
         )
 
     try:
-        rag_data = query_rag(request.query, top_k=request.top_k or 4)
+        rag_data = query_rag(request.query, top_k=request.top_k or 4, session_id=effective_session)
         answer, provider = generate_llm_answer(
             query=request.query,
             context=rag_data["context"],
@@ -306,26 +393,36 @@ def chat_with_documents(request: ChatRequest):
             answer=answer,
             sources=rag_data["sources"],
             citations=rag_data["citations"],
-            provider=provider
+            provider=provider,
+            session_id=effective_session
         )
     except HTTPException:
         # Pass HTTPException (such as 502 from upstream LLM) through without re-wrapping as 500
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query Execution Error: {str(e)}")
+        clean_detail = sanitize_error_detail(e)
+        logger.exception("Query execution failed: %s", clean_detail)
+        raise HTTPException(status_code=500, detail=f"Query Execution Error: {clean_detail}")
 
 
 @app.delete("/documents/{filename}")
-def delete_single_document(filename: str):
+def delete_single_document(
+    filename: str,
+    session_id: Optional[str] = Query(None),
+    current_session: str = Depends(get_current_session),
+    _: bool = Depends(verify_api_key)
+):
     """
-    Deletes all vector chunks and files belonging to a specific document.
+    Deletes all vector chunks and files belonging to a specific document in the session.
     Returns 404 if the document does not exist.
     """
-    existing_docs = get_indexed_documents()
+    effective_session = resolve_session_id(session_id, current_session)
+    existing_docs = get_indexed_documents(session_id=effective_session)
     exists = any(d["filename"] == filename for d in existing_docs)
 
+    session_upload_dir = get_session_upload_dir(effective_session)
     safe_filename = Path(filename).name
-    target_file = UPLOAD_DIR / safe_filename
+    target_file = session_upload_dir / safe_filename
 
     if not exists and not target_file.exists():
         raise HTTPException(
@@ -333,24 +430,36 @@ def delete_single_document(filename: str):
             detail=f"Document '{filename}' not found"
         )
 
-    success = delete_document_by_name(filename)
+    success = delete_document_by_name(filename, session_id=effective_session)
     if not success:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete document '{filename}' from vector database"
         )
-    return {"status": f"Document '{filename}' deleted successfully", "filename": filename}
+    return {
+        "status": f"Document '{filename}' deleted successfully",
+        "filename": filename,
+        "session_id": effective_session
+    }
 
 
 @app.post("/reset")
-def clear_knowledge_base():
+def clear_knowledge_base(
+    session_id: Optional[str] = Query(None),
+    current_session: str = Depends(get_current_session),
+    _: bool = Depends(verify_api_key)
+):
     """
-    Wipes the vector store and uploaded cache.
+    Wipes the vector store and uploaded cache for the specified session.
     """
-    success = reset_vector_store()
+    effective_session = resolve_session_id(session_id, current_session)
+    success = reset_vector_store(session_id=effective_session)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to reset vector database")
-    return {"status": "Vector database and cache reset successfully"}
+    return {
+        "status": "Vector database and cache reset successfully",
+        "session_id": effective_session
+    }
 
 
 # Serve frontend production bundle if built

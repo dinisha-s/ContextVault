@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = Field(default="llama3", description="Ollama model tag")
     LLM_TIMEOUT_SECONDS: int = Field(default=15, description="Timeout for external LLM API calls in seconds")
 
+    # Optional API Key Authentication (Empty string disables auth for local zero-config usage)
+    API_KEY: str = Field(default="", description="Optional API key for endpoint authentication")
+
     # Cross-Origin Resource Sharing (CORS) allowlist
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",

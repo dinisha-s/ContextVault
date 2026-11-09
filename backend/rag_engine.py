@@ -48,12 +48,43 @@ def get_embeddings():
     return _embedding_instance
 
 
-def get_vector_store() -> Chroma:
+def get_safe_collection_name(session_id: Any = "default") -> str:
+    """
+    Derives a Chroma-compliant collection name from a session identifier:
+    - 3-63 characters length
+    - Starts and ends with an alphanumeric character
+    - Contains only [a-zA-Z0-9._-]
+    - 'default' session maps to 'context_vault_collection' for seamless backward compatibility.
+    """
+    if not isinstance(session_id, str) or not session_id.strip() or session_id.strip() == "default":
+        return "context_vault_collection"
+    cleaned = re.sub(r'[^a-zA-Z0-9_-]', '_', session_id.strip())
+    name = f"cv_{cleaned}"[:63]
+    while name and not name[-1].isalnum():
+        name = name[:-1]
+    return name if len(name) >= 3 else "context_vault_collection"
+
+
+def get_session_upload_dir(session_id: Any = "default") -> Path:
+    """
+    Returns the isolated upload directory path for the given session.
+    Default session uses root UPLOAD_DIR; distinct sessions use isolated subdirectories.
+    """
+    if not isinstance(session_id, str) or not session_id.strip() or session_id.strip() == "default":
+        return UPLOAD_DIR
+    cleaned = re.sub(r'[^a-zA-Z0-9_-]', '_', session_id.strip()) or "default"
+    session_dir = UPLOAD_DIR / cleaned
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir
+
+
+def get_vector_store(session_id: str = "default") -> Chroma:
     embeddings = get_embeddings()
+    collection_name = get_safe_collection_name(session_id)
     return Chroma(
         persist_directory=str(PERSIST_DIRECTORY),
         embedding_function=embeddings,
-        collection_name="context_vault_collection"
+        collection_name=collection_name
     )
 
 
@@ -135,11 +166,11 @@ def load_document_file(file_path: str, filename: str):
     return docs
 
 
-def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
+def process_and_add_document(file_path: str, filename: str, session_id: str = "default") -> Dict[str, Any]:
     """
     Ingests a document, breaks it down recursively with overlap, generates embeddings,
-    and indexes chunks into ChromaDB with source metadata.
-    Deduplicates by removing pre-existing chunks for this filename before adding.
+    and indexes chunks into ChromaDB with source and session metadata.
+    Deduplicates by removing pre-existing chunks for this filename in the session before adding.
     Inserts chunks in batches of 500 to avoid Chroma/SQLite parameter limits.
     """
     docs = load_document_file(file_path, filename)
@@ -159,18 +190,19 @@ def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
     )
     chunks = text_splitter.split_documents(docs)
 
-    # Attach rich metadata for citations & deduplication
+    # Attach rich metadata for citations, multi-tenant isolation & deduplication
     for idx, chunk in enumerate(chunks):
         chunk.metadata["source"] = filename
         chunk.metadata["chunk_index"] = idx
         chunk.metadata["sha256"] = file_sha256
+        chunk.metadata["session_id"] = session_id
         if "page" in chunk.metadata:
             chunk.metadata["page_number"] = chunk.metadata["page"] + 1
 
-    # Deduplicate: remove any pre-existing chunks for this document name before adding new chunks
-    delete_document_by_name(filename)
+    # Deduplicate: remove any pre-existing chunks for this document name in this session
+    delete_document_by_name(filename, session_id=session_id)
 
-    vector_store = get_vector_store()
+    vector_store = get_vector_store(session_id=session_id)
 
     # Insert in batches of 500 to prevent exceeding Chroma / SQLite parameter limits
     BATCH_SIZE = 500
@@ -192,12 +224,12 @@ def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
     }
 
 
-def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
+def query_rag(user_query: str, top_k: int = 4, session_id: str = "default") -> Dict[str, Any]:
     """
-    Performs similarity search against local vector database
+    Performs similarity search against the session's isolated vector database
     and constructs grounded context with granular citation metadata.
     """
-    vector_store = get_vector_store()
+    vector_store = get_vector_store(session_id=session_id)
 
     # Retrieve top-k chunks with relevance scores if supported
     try:
@@ -250,16 +282,16 @@ def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
     }
 
 
-def get_indexed_documents() -> List[Dict[str, Any]]:
+def get_indexed_documents(session_id: str = "default") -> List[Dict[str, Any]]:
     """
-    Returns unique documents and summary stats currently stored in the vector store.
+    Returns unique documents and summary stats currently stored in the session's vector store.
     """
     chroma_db_file = PERSIST_DIRECTORY / "chroma.sqlite3"
     if not chroma_db_file.exists():
         return []
 
     try:
-        vector_store = get_vector_store()
+        vector_store = get_vector_store(session_id=session_id)
         data = vector_store.get()
         metadatas = data.get("metadatas", [])
         if not metadatas:
@@ -279,13 +311,13 @@ def get_indexed_documents() -> List[Dict[str, Any]]:
         return []
 
 
-def delete_document_by_name(filename: str) -> bool:
+def delete_document_by_name(filename: str, session_id: str = "default") -> bool:
     """
-    Deletes all vector chunks and files associated with a specific document name,
-    leaving other indexed documents intact.
+    Deletes all vector chunks and files associated with a specific document name within the session,
+    leaving other indexed documents and sessions intact.
     """
     try:
-        vector_store = get_vector_store()
+        vector_store = get_vector_store(session_id=session_id)
         # Delete from Chroma collection where source metadata matches the filename
         if hasattr(vector_store, "_collection"):
             try:
@@ -298,26 +330,28 @@ def delete_document_by_name(filename: str) -> bool:
             except Exception:
                 pass
 
-        # Clean up the physical file from uploads folder if present
+        # Clean up the physical file from session upload folder if present
+        session_upload_dir = get_session_upload_dir(session_id=session_id)
         safe_filename = Path(filename).name
-        target_file = UPLOAD_DIR / safe_filename
+        target_file = session_upload_dir / safe_filename
         if target_file.exists() and target_file.is_file():
             target_file.unlink()
 
         return True
     except Exception as e:
-        print(f"Error deleting document '{filename}': {e}")
+        print(f"Error deleting document '{filename}' in session '{session_id}': {e}")
         return False
 
 
-def reset_vector_store() -> bool:
+def reset_vector_store(session_id: str = "default") -> bool:
     """
-    Clears the ChromaDB collection through Chroma's API and empties the uploads folder.
-    Avoids corrupting SQLite databases by not wiping open files behind Chroma's back.
+    Clears the ChromaDB collection for the specified session and flushes its uploaded cache.
+    Leaves other session data and collections completely intact.
     """
     global _vector_store_instance
     try:
-        vector_store = get_vector_store()
+        vector_store = get_vector_store(session_id=session_id)
+        collection_name = get_safe_collection_name(session_id)
         # Delete collection through Chroma API
         if hasattr(vector_store, "delete_collection"):
             try:
@@ -326,22 +360,27 @@ def reset_vector_store() -> bool:
                 pass
         elif hasattr(vector_store, "_client"):
             try:
-                vector_store._client.delete_collection("context_vault_collection")
+                vector_store._client.delete_collection(collection_name)
             except Exception:
                 pass
 
-        # Clear uploads directory
-        if UPLOAD_DIR.exists():
-            for item in UPLOAD_DIR.iterdir():
-                if item.name == ".gitkeep":
-                    continue
-                if item.is_file():
-                    item.unlink()
-                elif item.is_dir():
-                    shutil.rmtree(item)
+        # Clear session upload directory
+        if session_id == "default":
+            if UPLOAD_DIR.exists():
+                for item in UPLOAD_DIR.iterdir():
+                    if item.name == ".gitkeep":
+                        continue
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir() and not item.name.startswith("cv_"):
+                        shutil.rmtree(item)
+        else:
+            session_dir = get_session_upload_dir(session_id=session_id)
+            if session_dir.exists() and session_dir != UPLOAD_DIR:
+                shutil.rmtree(session_dir)
 
         _vector_store_instance = None
         return True
     except Exception as e:
-        print(f"Error resetting vector store: {e}")
+        print(f"Error resetting vector store for session '{session_id}': {e}")
         return False
