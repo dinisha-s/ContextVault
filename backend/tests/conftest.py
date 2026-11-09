@@ -55,6 +55,9 @@ def temp_test_env(tmp_path, monkeypatch, fake_embedder):
     test_upload_dir.mkdir(parents=True, exist_ok=True)
     test_chroma_dir.mkdir(parents=True, exist_ok=True)
 
+    import config
+    monkeypatch.setattr(config.settings, "UPLOAD_DIR", str(test_upload_dir))
+    monkeypatch.setattr(config.settings, "CHROMA_PERSIST_DIR", str(test_chroma_dir))
     monkeypatch.setattr(rag_engine, "PERSIST_DIRECTORY", test_chroma_dir)
     monkeypatch.setattr(rag_engine, "UPLOAD_DIR", test_upload_dir)
     monkeypatch.setattr(main, "UPLOAD_DIR", test_upload_dir)

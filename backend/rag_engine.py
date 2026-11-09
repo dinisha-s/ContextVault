@@ -2,12 +2,17 @@ import os
 import shutil
 import re
 import hashlib
+import sys
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment configuration
-load_dotenv()
+# Ensure backend root is always on sys.path for robust imports across environments
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from config import settings
 
 # Prefer local cached weights to prevent network retry latency
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -18,9 +23,9 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
-UPLOAD_DIR = DATA_DIR / "uploads"
-PERSIST_DIRECTORY = DATA_DIR / "chroma_db"
+DATA_DIR = settings.DATA_DIR
+UPLOAD_DIR = settings.resolved_upload_dir
+PERSIST_DIRECTORY = settings.resolved_chroma_dir
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 PERSIST_DIRECTORY.mkdir(parents=True, exist_ok=True)
@@ -33,7 +38,7 @@ _vector_store_instance = None
 def get_embeddings():
     global _embedding_instance
     if _embedding_instance is None:
-        model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model_name = settings.EMBEDDING_MODEL
         # Initialize sentence-transformers embeddings locally
         _embedding_instance = HuggingFaceEmbeddings(
             model_name=model_name,

@@ -1,0 +1,37 @@
+# Git
+.git/
+.gitignore
+
+# Python virtual environments & bytecode
+venv/
+**/venv/
+__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Node & Frontend dependencies/builds
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/build/
+
+# Testing & Coverage
+.pytest_cache/
+**/.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases and runtime uploaded files
+backend/data/chroma_db/
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
+
+# Environment and secrets
+.env
+.env.*
+!backend/.env.example
+
+# OS generated files
+.DS_Store
+Thumbs.db

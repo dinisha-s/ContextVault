@@ -1,6 +1,5 @@
 import os
 import shutil
-import urllib.request
 import json
 import sys
 import re
@@ -17,8 +16,9 @@ from typing import Optional, List
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 
+from config import settings
+from llm_providers import generate_llm_answer
 from rag_engine import (
     process_and_add_document,
     query_rag,
@@ -27,8 +27,6 @@ from rag_engine import (
     delete_document_by_name,
     UPLOAD_DIR,
 )
-
-load_dotenv()
 
 # Setup structured logger
 logger = logging.getLogger("contextvault")
@@ -40,10 +38,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for local Vite frontend
+# Enable CORS for local Vite frontend with configurable origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,89 +61,6 @@ class ChatResponse(BaseModel):
     provider: str
 
 
-def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tuple[str, str]:
-    """
-    Selects the best available LLM provider:
-    1. OpenAI (if OPENAI_API_KEY is configured and valid)
-    2. Local Ollama (if running on OLLAMA_BASE_URL)
-    3. Grounded Context Synthesizer (Zero-dependency local fallback)
-    """
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
-    ollama_model = os.getenv("OLLAMA_MODEL", "llama3").strip()
-    provider_pref = os.getenv("LLM_PROVIDER", "auto").lower()
-
-    system_prompt = (
-        "You are ContextVault, an expert technical AI research assistant. "
-        "Answer the user's question accurately using ONLY the provided context below. "
-        "If the answer cannot be determined strictly from the context, explicitly state "
-        "'I could not find sufficient information in the indexed documents to answer this question.'\n\n"
-        f"Context:\n{context}"
-    )
-
-    # 1. Try OpenAI if preferred or auto
-    if provider_pref in ["auto", "openai"] and openai_key and openai_key != "your_openai_api_key_here":
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query}
-                ],
-                temperature=0.2
-            )
-            answer = response.choices[0].message.content
-            return answer, f"OpenAI ({model_name})"
-        except Exception as e:
-            if provider_pref == "openai":
-                raise HTTPException(status_code=502, detail=f"OpenAI Generation Error: {str(e)}")
-            logger.warning("OpenAI provider failed in auto mode: %s. Falling back to next provider.", str(e))
-
-    # 2. Try Local Ollama if configured / running
-    if provider_pref in ["auto", "ollama"]:
-        try:
-            req_data = json.dumps({
-                "model": ollama_model,
-                "prompt": f"{system_prompt}\n\nUser Question: {query}\n\nAnswer:",
-                "stream": False
-            }).encode("utf-8")
-            
-            req = urllib.request.Request(
-                f"{ollama_url}/api/generate",
-                data=req_data,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=12) as response:
-                res_json = json.loads(response.read().decode("utf-8"))
-                return res_json.get("response", ""), f"Ollama ({ollama_model})"
-        except Exception as e:
-            if provider_pref == "ollama":
-                raise HTTPException(status_code=502, detail=f"Could not connect to Ollama at {ollama_url}")
-            logger.warning("Ollama provider failed in auto mode: %s. Falling back to extractive synthesizer.", str(e))
-
-    # 3. Grounded Fallback Synthesizer (Extractive RAG)
-    if not citations:
-        return "No relevant context found in your documents. Try uploading more documents or rephrasing your search.", "ContextVault Extractive Engine"
-
-    summary_lines = [
-        "**ContextVault Document Retrieval Engine** synthesized the most relevant passages from your knowledge base:\n"
-    ]
-    for c in citations:
-        loc = f" (Page {c['page']})" if c.get('page') else ""
-        content_lines = [line.strip() for line in c['content'].split('\n') if line.strip()]
-        quoted_content = "\n> \n> ".join(content_lines)
-        summary_lines.append(f"> **[{c['source']}{loc}]**\n> {quoted_content}\n")
-
-    summary_lines.append(
-        "\n*Note: Configure an `OPENAI_API_KEY` or start a local `Ollama` instance in `backend/.env` for generative answers.*"
-    )
-    return "\n".join(summary_lines), "ContextVault Grounded Fallback"
-
-
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
@@ -153,7 +68,23 @@ def health_check():
         "status": "online",
         "service": "ContextVault RAG Backend",
         "version": "1.0.0",
-        "endpoints": ["/upload", "/chat", "/documents", "/reset"]
+        "endpoints": ["/upload", "/chat", "/documents", "/reset", "/config"]
+    }
+
+
+@app.get("/config")
+@app.get("/api/config")
+def get_public_config():
+    """
+    Returns public backend configuration so frontend dynamically adapts
+    instead of hardcoding model names or file limits.
+    """
+    return {
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "llm_provider": settings.LLM_PROVIDER,
+        "max_upload_size_mb": settings.MAX_UPLOAD_SIZE_MB,
+        "max_upload_size_bytes": settings.max_upload_size_bytes,
+        "supported_formats": [".pdf", ".md", ".txt"],
     }
 
 
@@ -169,8 +100,9 @@ def list_documents():
 @app.post("/upload")
 def upload_document(file: UploadFile = File(...)):
     """
-    Receives multi-format document (PDF, Markdown, TXT), validates content, saves under UUID,
-    and indexes into ChromaDB. Runs in threadpool (plain def) to keep event loop responsive.
+    Receives multi-format document (PDF, Markdown, TXT), validates content and size,
+    streams into server-generated UUID file, and indexes into ChromaDB.
+    Enforces MAX_UPLOAD_SIZE_MB hard limit and runs in threadpool.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename cannot be empty")
@@ -186,29 +118,41 @@ def upload_document(file: UploadFile = File(...)):
             detail=f"Unsupported format '{file_ext}'. Allowed formats: {', '.join(allowed_extensions)}"
         )
 
-    # Read uploaded bytes into memory for content validation
-    content = file.file.read()
-    if len(content) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes)")
-
-    # Validate basic file content
-    if file_ext == ".pdf":
-        if not content.startswith(b"%PDF"):
-            raise HTTPException(status_code=400, detail="Invalid PDF file: corrupted or missing PDF signature")
-    elif file_ext in [".md", ".txt"]:
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid text file: file contains non-UTF-8 characters")
-
     # Store file under server-generated UUID to eliminate path traversal vulnerabilities
     stored_filename = f"{uuid.uuid4().hex}{file_ext}"
     saved_path = UPLOAD_DIR / stored_filename
 
+    total_bytes = 0
+    max_bytes = settings.max_upload_size_bytes
+    header_sample = bytearray()
+
     try:
         with open(saved_path, "wb") as buffer:
-            buffer.write(content)
-        
+            while chunk := file.file.read(65536):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum allowed upload size of {settings.MAX_UPLOAD_SIZE_MB}MB."
+                    )
+                buffer.write(chunk)
+                if len(header_sample) < 4096:
+                    header_sample.extend(chunk[:4096 - len(header_sample)])
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes)")
+
+        # Validate basic file content
+        if file_ext == ".pdf":
+            if not bytes(header_sample).startswith(b"%PDF"):
+                raise HTTPException(status_code=400, detail="Invalid PDF file: corrupted or missing PDF signature")
+        elif file_ext in [".md", ".txt"]:
+            try:
+                with open(saved_path, "rb") as f:
+                    f.read().decode("utf-8")
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid text file: file contains non-UTF-8 characters")
+
         result = process_and_add_document(str(saved_path), display_filename)
         return {
             "status": "Indexed successfully",
@@ -417,6 +361,4 @@ if FRONTEND_DIST.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    host = os.getenv("BACKEND_HOST", "127.0.0.1")
-    port = int(os.getenv("BACKEND_PORT", 8000))
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+    uvicorn.run("main:app", host=settings.BACKEND_HOST, port=settings.BACKEND_PORT, reload=True)
