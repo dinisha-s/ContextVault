@@ -1,11 +1,16 @@
 import os
 import shutil
+import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment configuration
 load_dotenv()
+
+# Prefer local cached weights to prevent network retry latency
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -42,6 +47,46 @@ def get_vector_store() -> Chroma:
         collection_name="context_vault_collection"
     )
 
+def clean_extracted_text(text: str) -> str:
+    """
+    Sanitizes extracted document text.
+    Fixes irregular PDF token fragmentation where words are split across single lines,
+    normalizes excessive whitespace, and preserves clean paragraph structures.
+    """
+    if not text:
+        return ""
+    
+    # Normalize non-breaking spaces and line endings
+    text = text.replace('\xa0', ' ').replace('\r\n', '\n').replace('\r', '\n')
+    
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    if not lines:
+        return ""
+    
+    # Calculate average word count per line
+    avg_words = sum(len(line.split()) for line in lines) / len(lines)
+    
+    if avg_words < 3.0:
+        # Detected irregular single-word or short-phrase line breaks from PDF extraction
+        merged_paragraphs = []
+        current_chunk = []
+        
+        for line in lines:
+            current_chunk.append(line)
+            # Break paragraph on standard sentence endings or when accumulated enough words
+            if line.endswith(('.', ':', '?', '!')) or len(current_chunk) >= 14:
+                merged_paragraphs.append(" ".join(current_chunk))
+                current_chunk = []
+        
+        if current_chunk:
+            merged_paragraphs.append(" ".join(current_chunk))
+        
+        return "\n\n".join(merged_paragraphs)
+    else:
+        # Standard text: collapse multiple spaces and 3+ blank lines
+        collapsed = re.sub(r'[ \t]+', ' ', text)
+        return re.sub(r'\n{3,}', '\n\n', collapsed).strip()
+
 def load_document_file(file_path: str, filename: str):
     """
     Multi-format document loader supporting PDF, Markdown (.md), and plain text (.txt).
@@ -58,6 +103,10 @@ def load_document_file(file_path: str, filename: str):
         # Fallback to UTF-8 text loader
         loader = TextLoader(file_path, encoding="utf-8", autodetect_encoding=True)
         docs = loader.load()
+
+    # Clean and sanitize extracted text across all pages/documents
+    for doc in docs:
+        doc.page_content = clean_extracted_text(doc.page_content)
         
     return docs
 
@@ -88,7 +137,11 @@ def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
 
     vector_store = get_vector_store()
     vector_store.add_documents(chunks)
-    vector_store.persist()
+    if hasattr(vector_store, "persist"):
+        try:
+            vector_store.persist()
+        except Exception:
+            pass
 
     return {
         "filename": filename,
@@ -113,10 +166,17 @@ def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
         docs = retriever.invoke(user_query) if hasattr(retriever, "invoke") else retriever.get_relevant_documents(user_query)
         scores = [0.0] * len(docs)
 
+    # Relevance filtering: L2 distance > 1.35 indicates unrelated noise
+    MAX_L2_DISTANCE_THRESHOLD = 1.35
+
     citations = []
     sources = set()
 
     for idx, doc in enumerate(docs):
+        # Exclude chunks that are semantically unrelated to the user query
+        if idx < len(scores) and scores[idx] > MAX_L2_DISTANCE_THRESHOLD:
+            continue
+
         src = doc.metadata.get("source", "Unknown Document")
         sources.add(src)
         page = doc.metadata.get("page_number", doc.metadata.get("page", None))
@@ -127,7 +187,7 @@ def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
             "source": src,
             "page": page,
             "chunk_index": chunk_idx,
-            "content": doc.page_content.strip(),
+            "content": clean_extracted_text(doc.page_content),
             "score": round(scores[idx], 4) if idx < len(scores) else None
         })
 
@@ -174,6 +234,30 @@ def get_indexed_documents() -> List[Dict[str, Any]]:
         ]
     except Exception:
         return []
+
+def delete_document_by_name(filename: str) -> bool:
+    """
+    Deletes all vector chunks and files associated with a specific document name,
+    leaving other indexed documents intact.
+    """
+    try:
+        vector_store = get_vector_store()
+        # Delete from Chroma collection where source metadata matches the filename
+        if hasattr(vector_store, "_collection"):
+            vector_store._collection.delete(where={"source": filename})
+        elif hasattr(vector_store, "delete"):
+            vector_store.delete(where={"source": filename})
+        
+        # Clean up the physical file from uploads folder if present
+        safe_filename = Path(filename).name
+        target_file = UPLOAD_DIR / safe_filename
+        if target_file.exists() and target_file.is_file():
+            target_file.unlink()
+
+        return True
+    except Exception as e:
+        print(f"Error deleting document '{filename}': {e}")
+        return False
 
 def reset_vector_store():
     """

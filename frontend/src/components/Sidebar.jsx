@@ -22,6 +22,7 @@ export default function Sidebar({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null); // { type: 'success'|'error', message: '' }
   const [isResetting, setIsResetting] = useState(false);
+  const [deletingFile, setDeletingFile] = useState(null);
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -94,6 +95,37 @@ export default function Sidebar({
       });
     } finally {
       setIsResetting(false);
+    }
+  };
+
+  const handleDeleteSingleDoc = async (filename, e) => {
+    e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete "${filename}" from the vector database?`)) {
+      return;
+    }
+
+    setDeletingFile(filename);
+    try {
+      const res = await fetch(`${apiBaseUrl}/documents/${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setUploadStatus({
+          type: 'success',
+          message: `Deleted "${filename}" successfully.`
+        });
+        onUploadSuccess();
+      } else {
+        const err = await res.json();
+        throw new Error(err.detail || 'Failed to delete document');
+      }
+    } catch (err) {
+      setUploadStatus({
+        type: 'error',
+        message: err.message || `Error deleting "${filename}".`
+      });
+    } finally {
+      setDeletingFile(null);
     }
   };
 
@@ -238,9 +270,24 @@ export default function Sidebar({
                       {doc.filename}
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#E7EFE9] text-[#0C3B2E] shadow-[inset_1.5px_1.5px_3px_#D0DDD2,inset_-1.5px_-1.5px_3px_#FFFFFF] border border-[#6D9773]/30 font-semibold shrink-0">
-                    {doc.chunk_count} chunks
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#E7EFE9] text-[#0C3B2E] shadow-[inset_1.5px_1.5px_3px_#D0DDD2,inset_-1.5px_-1.5px_3px_#FFFFFF] border border-[#6D9773]/30 font-semibold">
+                      {doc.chunk_count} chunks
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteSingleDoc(doc.filename, e)}
+                      disabled={deletingFile === doc.filename}
+                      title={`Delete "${doc.filename}"`}
+                      className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50/70 active:scale-95 transition"
+                    >
+                      {deletingFile === doc.filename ? (
+                        <div className="w-3 h-3 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
                 </div>
               ))
             )}

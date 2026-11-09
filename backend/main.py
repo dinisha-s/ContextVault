@@ -2,7 +2,15 @@ import os
 import shutil
 import urllib.request
 import json
+import sys
+import re
 from pathlib import Path
+
+# Ensure backend root is always on sys.path for robust imports across environments
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
 from typing import Optional, List
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +22,7 @@ from rag_engine import (
     query_rag,
     get_indexed_documents,
     reset_vector_store,
+    delete_document_by_name,
     UPLOAD_DIR,
 )
 
@@ -117,7 +126,9 @@ def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tupl
     ]
     for c in citations:
         loc = f" (Page {c['page']})" if c.get('page') else ""
-        summary_lines.append(f"> **[{c['source']}{loc}]**\n> {c['content']}\n")
+        content_lines = [line.strip() for line in c['content'].split('\n') if line.strip()]
+        quoted_content = "\n> \n> ".join(content_lines)
+        summary_lines.append(f"> **[{c['source']}{loc}]**\n> {quoted_content}\n")
 
     summary_lines.append(
         "\n*Note: Configure an `OPENAI_API_KEY` or start a local `Ollama` instance in `backend/.env` for generative answers.*"
@@ -171,13 +182,139 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion Error: {str(e)}")
 
+def check_conversational_intent(query: str) -> Optional[str]:
+    """
+    Detects greetings, appreciation, identity questions, and general conversational intents.
+    Returns an appropriate conversational response, or None if the query should search documents.
+    """
+    q = query.lower().strip().rstrip("?.! ")
+    
+    # 1. Greetings
+    greetings = {"hi", "hello", "hey", "hola", "namaste", "vanakkam", "good morning", "good afternoon", "good evening", "howdy", "sup", "hi there", "hello there"}
+    if q in greetings or any(q.startswith(g + " ") for g in ["hi", "hello", "hey"]):
+        return (
+            "Hello! I am **ContextVault**, your document research assistant.\n\n"
+            "I can search, extract, and verify information with exact page citations from your indexed documents.\n\n"
+            "**What would you like to know?**\n"
+            "- Ask a specific question about your uploaded documents\n"
+            "- Type *'what are the documents'* to see what is currently indexed\n"
+            "- Ask for summaries or key takeaways from any file"
+        )
+    
+    # 2. Identity / Capabilities
+    if q in {"who are you", "what are you", "what can you do", "help", "what is contextvault"}:
+        return (
+            "I am **ContextVault**, an offline-first RAG (Retrieval-Augmented Generation) document intelligence system.\n\n"
+            "**My Capabilities:**\n"
+            "1. **Verifiable Retrieval:** I retrieve exact context chunks with source file and page citations.\n"
+            "2. **Zero Hallucination:** I strictly answer based on your uploaded documents without making up false facts.\n"
+            "3. **Local & Private:** Your documents stay securely on your system.\n\n"
+            "Try asking me a question about your indexed files!"
+        )
+    
+    # 3. Appreciation / Closing
+    thanks = {"thanks", "thank you", "thx", "great", "awesome", "perfect", "good job", "thank you so much"}
+    if q in thanks or q.startswith("thank"):
+        return "You're very welcome! Feel free to ask whenever you need more information from your documents."
+    
+    goodbyes = {"bye", "goodbye", "see you", "exit"}
+    if q in goodbyes:
+        return "Goodbye! Have a great day ahead. Your documents remain securely indexed whenever you return."
+
+    return None
+
+def is_document_catalog_query(query: str) -> bool:
+    """
+    Detects if the user is asking to list, inspect, or see what documents/files are indexed,
+    rather than asking a question about the content of a document.
+    """
+    q = query.lower().strip().rstrip("?.! ")
+    doc_catalog_triggers = [
+        "what are the documents",
+        "what are the indexed documents",
+        "what documents are in the indexed",
+        "what are the files",
+        "what documents are indexed",
+        "what documents do i have",
+        "what documents do you have",
+        "what is in the indexed document",
+        "what is in the indexed documents",
+        "which documents are indexed",
+        "which documents are uploaded",
+        "list the documents",
+        "list all documents",
+        "list indexed documents",
+        "show indexed documents",
+        "show all documents",
+        "show my documents",
+        "what files are uploaded",
+        "what files are indexed",
+        "documents in the indexed document",
+        "documents in the indexed documents"
+    ]
+    if any(trigger in q for trigger in doc_catalog_triggers):
+        return True
+    has_question = any(w in q for w in ["what", "which", "list", "show", "tell me", "how many", "all"])
+    has_docs = any(w in q for w in ["document", "documents", "file", "files"])
+    has_index = any(w in q for w in ["indexed", "uploaded", "available", "stored", "in contextvault", "in the database"])
+    return bool(has_question and has_docs and has_index)
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_documents(request: ChatRequest):
     """
     Queries vector store for top matching semantic passages and produces an answer with citations.
+    Handles catalog inspection queries with a clean index summary.
     """
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    # Conversational chit-chat & greeting routing
+    chat_intent_reply = check_conversational_intent(request.query)
+    if chat_intent_reply:
+        return ChatResponse(
+            query=request.query,
+            answer=chat_intent_reply,
+            sources=[],
+            citations=[],
+            provider="ContextVault Conversational Agent"
+        )
+
+    # Smart Routing: If user is asking what documents are in the indexed vault
+    if is_document_catalog_query(request.query):
+        docs = get_indexed_documents()
+        if not docs:
+            return ChatResponse(
+                query=request.query,
+                answer=(
+                    "**No Documents Indexed Yet**\n\n"
+                    "Your ContextVault knowledge base is currently empty. "
+                    "You can upload `.pdf`, `.md`, or `.txt` files using the upload button in the left sidebar to start indexing documents."
+                ),
+                sources=[],
+                citations=[],
+                provider="ContextVault Catalog Intelligence"
+            )
+        
+        doc_items = "\n".join(
+            f"1. **{d['filename']}** - `{d['chunk_count']}` indexed chunks"
+            for d in docs
+        )
+        total_chunks = sum(d['chunk_count'] for d in docs)
+        
+        answer = (
+            f"**Indexed Documents in ContextVault ({len(docs)} Total)**\n\n"
+            f"Here are the active documents currently indexed and searchable in your knowledge base:\n\n"
+            f"{doc_items}\n\n"
+            f"**Total Vector Chunks:** `{total_chunks}`\n\n"
+            f"*Tip: You can ask specific questions about any of these documents!*"
+        )
+        return ChatResponse(
+            query=request.query,
+            answer=answer,
+            sources=[d["filename"] for d in docs],
+            citations=[],
+            provider="ContextVault Catalog Intelligence"
+        )
 
     try:
         rag_data = query_rag(request.query, top_k=request.top_k or 4)
@@ -196,6 +333,19 @@ async def chat_with_documents(request: ChatRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Execution Error: {str(e)}")
+
+@app.delete("/documents/{filename}")
+def delete_single_document(filename: str):
+    """
+    Deletes all vector chunks and files belonging to a specific document.
+    """
+    success = delete_document_by_name(filename)
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete document '{filename}' from vector database"
+        )
+    return {"status": f"Document '{filename}' deleted successfully", "filename": filename}
 
 @app.post("/reset")
 def clear_knowledge_base():
