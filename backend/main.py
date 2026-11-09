@@ -4,6 +4,8 @@ import urllib.request
 import json
 import sys
 import re
+import uuid
+import logging
 from pathlib import Path
 
 # Ensure backend root is always on sys.path for robust imports across environments
@@ -14,7 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 from typing import Optional, List
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from rag_engine import (
@@ -27,6 +29,10 @@ from rag_engine import (
 )
 
 load_dotenv()
+
+# Setup structured logger
+logger = logging.getLogger("contextvault")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 app = FastAPI(
     title="ContextVault API",
@@ -43,9 +49,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class ChatRequest(BaseModel):
-    query: str
-    top_k: Optional[int] = 4
+    query: str = Field(..., min_length=1, max_length=2000, description="User search query")
+    top_k: Optional[int] = Field(default=4, ge=1, le=10, description="Number of results (1 to 10)")
+
 
 class ChatResponse(BaseModel):
     query: str
@@ -53,6 +61,7 @@ class ChatResponse(BaseModel):
     sources: List[str]
     citations: List[dict]
     provider: str
+
 
 def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tuple[str, str]:
     """
@@ -93,6 +102,7 @@ def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tupl
         except Exception as e:
             if provider_pref == "openai":
                 raise HTTPException(status_code=502, detail=f"OpenAI Generation Error: {str(e)}")
+            logger.warning("OpenAI provider failed in auto mode: %s. Falling back to next provider.", str(e))
 
     # 2. Try Local Ollama if configured / running
     if provider_pref in ["auto", "ollama"]:
@@ -112,12 +122,12 @@ def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tupl
             with urllib.request.urlopen(req, timeout=12) as response:
                 res_json = json.loads(response.read().decode("utf-8"))
                 return res_json.get("response", ""), f"Ollama ({ollama_model})"
-        except Exception:
+        except Exception as e:
             if provider_pref == "ollama":
                 raise HTTPException(status_code=502, detail=f"Could not connect to Ollama at {ollama_url}")
+            logger.warning("Ollama provider failed in auto mode: %s. Falling back to extractive synthesizer.", str(e))
 
     # 3. Grounded Fallback Synthesizer (Extractive RAG)
-    # Formats the top matching excerpts cleanly with direct attribution
     if not citations:
         return "No relevant context found in your documents. Try uploading more documents or rephrasing your search.", "ContextVault Extractive Engine"
 
@@ -135,6 +145,7 @@ def generate_llm_answer(query: str, context: str, citations: List[dict]) -> tupl
     )
     return "\n".join(summary_lines), "ContextVault Grounded Fallback"
 
+
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
@@ -145,6 +156,7 @@ def health_check():
         "endpoints": ["/upload", "/chat", "/documents", "/reset"]
     }
 
+
 @app.get("/documents")
 def list_documents():
     """
@@ -153,13 +165,20 @@ def list_documents():
     docs = get_indexed_documents()
     return {"documents": docs, "total_documents": len(docs)}
 
+
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+def upload_document(file: UploadFile = File(...)):
     """
-    Receives multi-format document (PDF, Markdown, TXT), saves it, and chunks/indexes into ChromaDB.
+    Receives multi-format document (PDF, Markdown, TXT), validates content, saves under UUID,
+    and indexes into ChromaDB. Runs in threadpool (plain def) to keep event loop responsive.
     """
-    allowed_extensions = {".pdf", ".md", ".txt"}
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename cannot be empty")
+
+    # Clean display filename and extract lowercase extension
+    display_filename = Path(file.filename).name
     file_ext = Path(file.filename).suffix.lower()
+    allowed_extensions = {".pdf", ".md", ".txt"}
 
     if file_ext not in allowed_extensions:
         raise HTTPException(
@@ -167,69 +186,87 @@ async def upload_document(file: UploadFile = File(...)):
             detail=f"Unsupported format '{file_ext}'. Allowed formats: {', '.join(allowed_extensions)}"
         )
 
-    saved_path = UPLOAD_DIR / file.filename
+    # Read uploaded bytes into memory for content validation
+    content = file.file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty (0 bytes)")
+
+    # Validate basic file content
+    if file_ext == ".pdf":
+        if not content.startswith(b"%PDF"):
+            raise HTTPException(status_code=400, detail="Invalid PDF file: corrupted or missing PDF signature")
+    elif file_ext in [".md", ".txt"]:
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid text file: file contains non-UTF-8 characters")
+
+    # Store file under server-generated UUID to eliminate path traversal vulnerabilities
+    stored_filename = f"{uuid.uuid4().hex}{file_ext}"
+    saved_path = UPLOAD_DIR / stored_filename
+
     try:
         with open(saved_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(content)
         
-        result = process_and_add_document(str(saved_path), file.filename)
+        result = process_and_add_document(str(saved_path), display_filename)
         return {
             "status": "Indexed successfully",
             "filename": result["filename"],
             "chunks": result["chunk_count"],
-            "characters": result["total_characters"]
+            "characters": result["total_characters"],
+            "sha256": result.get("sha256")
         }
+    except HTTPException:
+        if saved_path.exists():
+            saved_path.unlink()
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingestion Error: {str(e)}")
+        if saved_path.exists():
+            saved_path.unlink()
+        raise HTTPException(status_code=400, detail=f"Ingestion Error: {str(e)}")
+
 
 def check_conversational_intent(query: str) -> Optional[str]:
     """
-    Detects greetings, appreciation, identity questions, and general conversational intents.
-    Returns an appropriate conversational response, or None if the query should search documents.
+    Restricted to exact-match whole-message greetings and basic identity questions only.
+    Never swallows real questions or queries with substantive words.
     """
     q = query.lower().strip().rstrip("?.! ")
     
-    # 1. Greetings
-    greetings = {"hi", "hello", "hey", "hola", "namaste", "vanakkam", "good morning", "good afternoon", "good evening", "howdy", "sup", "hi there", "hello there"}
-    if q in greetings or any(q.startswith(g + " ") for g in ["hi", "hello", "hey"]):
+    greetings = {
+        "hi", "hello", "hey", "hola", "namaste", "vanakkam",
+        "good morning", "good afternoon", "good evening",
+        "hi contextvault", "hello contextvault"
+    }
+    if q in greetings:
         return (
-            "Hello! I am **ContextVault**, your document research assistant.\n\n"
-            "I can search, extract, and verify information with exact page citations from your indexed documents.\n\n"
-            "**What would you like to know?**\n"
-            "- Ask a specific question about your uploaded documents\n"
-            "- Type *'what are the documents'* to see what is currently indexed\n"
-            "- Ask for summaries or key takeaways from any file"
+            "Hello! I am ContextVault, your document research assistant.\n\n"
+            "Ask a question about your uploaded documents, and I will find the relevant passages with exact citations."
         )
-    
-    # 2. Identity / Capabilities
+
     if q in {"who are you", "what are you", "what can you do", "help", "what is contextvault"}:
         return (
-            "I am **ContextVault**, an offline-first RAG (Retrieval-Augmented Generation) document intelligence system.\n\n"
-            "**My Capabilities:**\n"
-            "1. **Verifiable Retrieval:** I retrieve exact context chunks with source file and page citations.\n"
-            "2. **Zero Hallucination:** I strictly answer based on your uploaded documents without making up false facts.\n"
-            "3. **Local & Private:** Your documents stay securely on your system.\n\n"
-            "Try asking me a question about your indexed files!"
+            "I am ContextVault, an offline-first RAG (Retrieval-Augmented Generation) document intelligence system.\n\n"
+            "Upload `.pdf`, `.md`, or `.txt` documents to ask questions and retrieve grounded answers with citations."
         )
-    
-    # 3. Appreciation / Closing
-    thanks = {"thanks", "thank you", "thx", "great", "awesome", "perfect", "good job", "thank you so much"}
-    if q in thanks or q.startswith("thank"):
-        return "You're very welcome! Feel free to ask whenever you need more information from your documents."
-    
-    goodbyes = {"bye", "goodbye", "see you", "exit"}
-    if q in goodbyes:
-        return "Goodbye! Have a great day ahead. Your documents remain securely indexed whenever you return."
+
+    if q in {"thanks", "thank you", "thx"}:
+        return "You're very welcome! Feel free to ask whenever you need information from your documents."
+
+    if q in {"bye", "goodbye"}:
+        return "Goodbye! Have a great day ahead. Your documents remain indexed whenever you return."
 
     return None
 
+
 def is_document_catalog_query(query: str) -> bool:
     """
-    Detects if the user is asking to list, inspect, or see what documents/files are indexed,
-    rather than asking a question about the content of a document.
+    Restricted to exact triggers asking to list or inspect catalog documents.
+    Never matches content queries such as 'what data is stored in the database file?'.
     """
     q = query.lower().strip().rstrip("?.! ")
-    doc_catalog_triggers = [
+    exact_catalog_triggers = {
         "what are the documents",
         "what are the indexed documents",
         "what documents are in the indexed",
@@ -251,24 +288,20 @@ def is_document_catalog_query(query: str) -> bool:
         "what files are indexed",
         "documents in the indexed document",
         "documents in the indexed documents"
-    ]
-    if any(trigger in q for trigger in doc_catalog_triggers):
-        return True
-    has_question = any(w in q for w in ["what", "which", "list", "show", "tell me", "how many", "all"])
-    has_docs = any(w in q for w in ["document", "documents", "file", "files"])
-    has_index = any(w in q for w in ["indexed", "uploaded", "available", "stored", "in contextvault", "in the database"])
-    return bool(has_question and has_docs and has_index)
+    }
+    return q in exact_catalog_triggers
+
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_with_documents(request: ChatRequest):
+def chat_with_documents(request: ChatRequest):
     """
     Queries vector store for top matching semantic passages and produces an answer with citations.
-    Handles catalog inspection queries with a clean index summary.
+    Runs in threadpool (plain def) to keep event loop responsive.
     """
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
-    # Conversational chit-chat & greeting routing
+    # Conversational chit-chat & greeting routing (exact match only)
     chat_intent_reply = check_conversational_intent(request.query)
     if chat_intent_reply:
         return ChatResponse(
@@ -279,7 +312,7 @@ async def chat_with_documents(request: ChatRequest):
             provider="ContextVault Conversational Agent"
         )
 
-    # Smart Routing: If user is asking what documents are in the indexed vault
+    # Smart Routing: If user is explicitly asking to list documents
     if is_document_catalog_query(request.query):
         docs = get_indexed_documents()
         if not docs:
@@ -331,14 +364,31 @@ async def chat_with_documents(request: ChatRequest):
             citations=rag_data["citations"],
             provider=provider
         )
+    except HTTPException:
+        # Pass HTTPException (such as 502 from upstream LLM) through without re-wrapping as 500
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query Execution Error: {str(e)}")
+
 
 @app.delete("/documents/{filename}")
 def delete_single_document(filename: str):
     """
     Deletes all vector chunks and files belonging to a specific document.
+    Returns 404 if the document does not exist.
     """
+    existing_docs = get_indexed_documents()
+    exists = any(d["filename"] == filename for d in existing_docs)
+
+    safe_filename = Path(filename).name
+    target_file = UPLOAD_DIR / safe_filename
+
+    if not exists and not target_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document '{filename}' not found"
+        )
+
     success = delete_document_by_name(filename)
     if not success:
         raise HTTPException(
@@ -346,6 +396,7 @@ def delete_single_document(filename: str):
             detail=f"Failed to delete document '{filename}' from vector database"
         )
     return {"status": f"Document '{filename}' deleted successfully", "filename": filename}
+
 
 @app.post("/reset")
 def clear_knowledge_base():
@@ -356,6 +407,7 @@ def clear_knowledge_base():
     if not success:
         raise HTTPException(status_code=500, detail="Failed to reset vector database")
     return {"status": "Vector database and cache reset successfully"}
+
 
 # Serve frontend production bundle if built
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"

@@ -1,6 +1,7 @@
 import os
 import shutil
 import re
+import hashlib
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -26,6 +27,8 @@ PERSIST_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
 # Cache embedding model in memory
 _embedding_instance = None
+_vector_store_instance = None
+
 
 def get_embeddings():
     global _embedding_instance
@@ -39,6 +42,7 @@ def get_embeddings():
         )
     return _embedding_instance
 
+
 def get_vector_store() -> Chroma:
     embeddings = get_embeddings()
     return Chroma(
@@ -47,77 +51,99 @@ def get_vector_store() -> Chroma:
         collection_name="context_vault_collection"
     )
 
-def clean_extracted_text(text: str) -> str:
+
+def clean_extracted_text(text: str, is_pdf: bool = False) -> str:
     """
     Sanitizes extracted document text.
-    Fixes irregular PDF token fragmentation where words are split across single lines,
-    normalizes excessive whitespace, and preserves clean paragraph structures.
+    For Markdown and plain text (is_pdf=False), preserves lists, newlines, and code blocks.
+    For PDFs (is_pdf=True), conservatively repairs word-fragmented lines caused by table/column extraction.
     """
     if not text:
         return ""
-    
-    # Normalize non-breaking spaces and line endings
+
+    # Normalize non-breaking spaces, bullets, and line endings
     text = text.replace('\xa0', ' ').replace('\r\n', '\n').replace('\r', '\n')
-    
+
+    if not is_pdf:
+        # Non-PDF text (Markdown, TXT): preserve structure, newlines, list markers, and code indentation
+        collapsed = re.sub(r'[ \t]+', ' ', text)
+        return re.sub(r'\n{3,}', '\n\n', collapsed).strip()
+
+    # For PDF text, normalize bullet points and empty lines
+    text = text.replace('\u25cf', '- ').replace('\u2022', '- ')
+    text = re.sub(r'\n[ \t]*\n', '\n', text)
+
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     if not lines:
         return ""
-    
-    # Calculate average word count per line
+
     avg_words = sum(len(line.split()) for line in lines) / len(lines)
-    
-    if avg_words < 3.0:
-        # Detected irregular single-word or short-phrase line breaks from PDF extraction
-        merged_paragraphs = []
-        current_chunk = []
-        
-        for line in lines:
-            current_chunk.append(line)
-            # Break paragraph on standard sentence endings or when accumulated enough words
-            if line.endswith(('.', ':', '?', '!')) or len(current_chunk) >= 14:
-                merged_paragraphs.append(" ".join(current_chunk))
-                current_chunk = []
-        
-        if current_chunk:
-            merged_paragraphs.append(" ".join(current_chunk))
-        
-        return "\n\n".join(merged_paragraphs)
-    else:
-        # Standard text: collapse multiple spaces and 3+ blank lines
+    if avg_words >= 3.5:
         collapsed = re.sub(r'[ \t]+', ' ', text)
         return re.sub(r'\n{3,}', '\n\n', collapsed).strip()
+
+    bullet_prefixes = ('- ', '* ', '+ ')
+    merged_lines = []
+    current_chunk = []
+
+    for line in lines:
+        is_bullet = any(line.startswith(p) for p in bullet_prefixes)
+        is_numbered = bool(re.match(r'^(?:[0-9]+[.)]|[a-zA-Z][.)]|[ivxIVX]+[.)])', line))
+
+        if (is_bullet or is_numbered) and current_chunk:
+            merged_lines.append(" ".join(current_chunk))
+            current_chunk = [line]
+        elif current_chunk and current_chunk[-1].endswith(('.', ':', '?', '!')) and len(current_chunk) >= 8:
+            merged_lines.append(" ".join(current_chunk))
+            current_chunk = [line]
+        else:
+            current_chunk.append(line)
+
+    if current_chunk:
+        merged_lines.append(" ".join(current_chunk))
+
+    return "\n".join(merged_lines)
+
 
 def load_document_file(file_path: str, filename: str):
     """
     Multi-format document loader supporting PDF, Markdown (.md), and plain text (.txt).
     """
     ext = Path(filename).suffix.lower()
-    
+
     if ext == ".pdf":
         loader = PyPDFLoader(file_path)
         docs = loader.load()
+        for doc in docs:
+            doc.page_content = clean_extracted_text(doc.page_content, is_pdf=True)
     elif ext in [".md", ".txt"]:
         loader = TextLoader(file_path, encoding="utf-8")
         docs = loader.load()
+        for doc in docs:
+            doc.page_content = clean_extracted_text(doc.page_content, is_pdf=False)
     else:
-        # Fallback to UTF-8 text loader
         loader = TextLoader(file_path, encoding="utf-8", autodetect_encoding=True)
         docs = loader.load()
+        for doc in docs:
+            doc.page_content = clean_extracted_text(doc.page_content, is_pdf=False)
 
-    # Clean and sanitize extracted text across all pages/documents
-    for doc in docs:
-        doc.page_content = clean_extracted_text(doc.page_content)
-        
     return docs
+
 
 def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
     """
     Ingests a document, breaks it down recursively with overlap, generates embeddings,
     and indexes chunks into ChromaDB with source metadata.
+    Deduplicates by removing pre-existing chunks for this filename before adding.
+    Inserts chunks in batches of 500 to avoid Chroma/SQLite parameter limits.
     """
     docs = load_document_file(file_path, filename)
     if not docs:
         raise ValueError(f"No content could be extracted from '{filename}'.")
+
+    # Compute SHA-256 hash of the file content for deduplication tracking
+    with open(file_path, "rb") as f:
+        file_sha256 = hashlib.sha256(f.read()).hexdigest()
 
     # Recursive chunking: balances semantic unit size with overlap to avoid context fragmentation
     text_splitter = RecursiveCharacterTextSplitter(
@@ -128,15 +154,25 @@ def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
     )
     chunks = text_splitter.split_documents(docs)
 
-    # Attach rich metadata for citations
+    # Attach rich metadata for citations & deduplication
     for idx, chunk in enumerate(chunks):
         chunk.metadata["source"] = filename
         chunk.metadata["chunk_index"] = idx
+        chunk.metadata["sha256"] = file_sha256
         if "page" in chunk.metadata:
             chunk.metadata["page_number"] = chunk.metadata["page"] + 1
 
+    # Deduplicate: remove any pre-existing chunks for this document name before adding new chunks
+    delete_document_by_name(filename)
+
     vector_store = get_vector_store()
-    vector_store.add_documents(chunks)
+
+    # Insert in batches of 500 to prevent exceeding Chroma / SQLite parameter limits
+    BATCH_SIZE = 500
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch = chunks[i : i + BATCH_SIZE]
+        vector_store.add_documents(batch)
+
     if hasattr(vector_store, "persist"):
         try:
             vector_store.persist()
@@ -146,16 +182,18 @@ def process_and_add_document(file_path: str, filename: str) -> Dict[str, Any]:
     return {
         "filename": filename,
         "chunk_count": len(chunks),
-        "total_characters": sum(len(c.page_content) for c in chunks)
+        "total_characters": sum(len(c.page_content) for c in chunks),
+        "sha256": file_sha256
     }
+
 
 def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
     """
-    Performs cosine similarity search against local vector database
+    Performs similarity search against local vector database
     and constructs grounded context with granular citation metadata.
     """
     vector_store = get_vector_store()
-    
+
     # Retrieve top-k chunks with relevance scores if supported
     try:
         results_with_scores = vector_store.similarity_search_with_score(user_query, k=top_k)
@@ -187,7 +225,7 @@ def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
             "source": src,
             "page": page,
             "chunk_index": chunk_idx,
-            "content": clean_extracted_text(doc.page_content),
+            "content": clean_extracted_text(doc.page_content, is_pdf=False),
             "score": round(scores[idx], 4) if idx < len(scores) else None
         })
 
@@ -206,11 +244,11 @@ def query_rag(user_query: str, top_k: int = 4) -> Dict[str, Any]:
         "raw_doc_count": len(docs)
     }
 
+
 def get_indexed_documents() -> List[Dict[str, Any]]:
     """
     Returns unique documents and summary stats currently stored in the vector store.
     """
-    # Fast path: if vector database has not been initialized yet, return immediately
     chroma_db_file = PERSIST_DIRECTORY / "chroma.sqlite3"
     if not chroma_db_file.exists():
         return []
@@ -235,6 +273,7 @@ def get_indexed_documents() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
+
 def delete_document_by_name(filename: str) -> bool:
     """
     Deletes all vector chunks and files associated with a specific document name,
@@ -244,10 +283,16 @@ def delete_document_by_name(filename: str) -> bool:
         vector_store = get_vector_store()
         # Delete from Chroma collection where source metadata matches the filename
         if hasattr(vector_store, "_collection"):
-            vector_store._collection.delete(where={"source": filename})
+            try:
+                vector_store._collection.delete(where={"source": filename})
+            except Exception:
+                pass
         elif hasattr(vector_store, "delete"):
-            vector_store.delete(where={"source": filename})
-        
+            try:
+                vector_store.delete(where={"source": filename})
+            except Exception:
+                pass
+
         # Clean up the physical file from uploads folder if present
         safe_filename = Path(filename).name
         target_file = UPLOAD_DIR / safe_filename
@@ -259,15 +304,39 @@ def delete_document_by_name(filename: str) -> bool:
         print(f"Error deleting document '{filename}': {e}")
         return False
 
-def reset_vector_store():
+
+def reset_vector_store() -> bool:
     """
-    Clears the ChromaDB collection and storage folder.
+    Clears the ChromaDB collection through Chroma's API and empties the uploads folder.
+    Avoids corrupting SQLite databases by not wiping open files behind Chroma's back.
     """
-    global _embedding_instance
+    global _vector_store_instance
     try:
-        if PERSIST_DIRECTORY.exists():
-            shutil.rmtree(PERSIST_DIRECTORY)
-        PERSIST_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        vector_store = get_vector_store()
+        # Delete collection through Chroma API
+        if hasattr(vector_store, "delete_collection"):
+            try:
+                vector_store.delete_collection()
+            except Exception:
+                pass
+        elif hasattr(vector_store, "_client"):
+            try:
+                vector_store._client.delete_collection("context_vault_collection")
+            except Exception:
+                pass
+
+        # Clear uploads directory
+        if UPLOAD_DIR.exists():
+            for item in UPLOAD_DIR.iterdir():
+                if item.name == ".gitkeep":
+                    continue
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+
+        _vector_store_instance = None
         return True
     except Exception as e:
+        print(f"Error resetting vector store: {e}")
         return False

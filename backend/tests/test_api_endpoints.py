@@ -2,6 +2,7 @@ import unittest
 import sys
 import io
 import os
+import inspect
 from pathlib import Path
 
 # Force offline embeddings & extractive LLM fallback for fast automated testing
@@ -14,6 +15,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi import HTTPException, UploadFile
+from rag_engine import UPLOAD_DIR
 from main import (
     health_check,
     list_documents,
@@ -25,12 +27,14 @@ from main import (
 
 def run_coro(coro):
     """
-    Executes a synchronous-backed coroutine without spawning thread loops on Windows.
+    Executes a coroutine if async, or returns the result directly if synchronous.
     """
-    try:
-        coro.send(None)
-    except StopIteration as stop:
-        return stop.value
+    if inspect.iscoroutine(coro):
+        try:
+            coro.send(None)
+        except StopIteration as stop:
+            return stop.value
+    return coro
 
 class TestAPIEndpoints(unittest.TestCase):
     """
@@ -66,14 +70,11 @@ class TestAPIEndpoints(unittest.TestCase):
 
     def test_upload_invalid_file_extension(self):
         """
-        POST /upload with an unsupported extension (e.g. .csv or .exe)
-        must raise an HTTPException with status 400 Bad Request.
+        POST /upload with an unsupported extension (e.g. .csv or .exe) must raise HTTP 400.
         """
-        dummy_file = io.BytesIO(b"executable-binary-content")
-        upload_file = UploadFile(file=dummy_file, filename="malicious.exe")
-        
+        fake_csv = UploadFile(filename="malicious_payload.csv", file=io.BytesIO(b"col1,col2\n1,2"))
         with self.assertRaises(HTTPException) as ctx:
-            run_coro(upload_document(upload_file))
+            run_coro(upload_document(fake_csv))
         
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("Unsupported format", ctx.exception.detail)
@@ -106,11 +107,17 @@ class TestAPIEndpoints(unittest.TestCase):
 
     def test_delete_single_document(self):
         """
-        DELETE /documents/{filename} should succeed and remove chunks by source.
+        DELETE /documents/{filename} should succeed when file exists.
         """
-        result = delete_single_document("test_temporary_target.txt")
-        self.assertIn("status", result)
-        self.assertIn("deleted successfully", result["status"])
+        target = UPLOAD_DIR / "test_temporary_target.txt"
+        target.write_text("temporary content for deletion test", encoding="utf-8")
+        try:
+            result = delete_single_document("test_temporary_target.txt")
+            self.assertIn("status", result)
+            self.assertIn("deleted successfully", result["status"])
+        finally:
+            if target.exists():
+                target.unlink()
 
 if __name__ == "__main__":
     unittest.main()

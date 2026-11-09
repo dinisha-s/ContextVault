@@ -55,7 +55,7 @@ def main():
     print("-" * 70, flush=True)
 
     if result.wasSuccessful():
-        print("\n>>> ALL 10 TESTS PASSED! ContextVault verification 100% successful. <<<\n", flush=True)
+        print(f"\n>>> ALL {result.testsRun} TESTS PASSED! ContextVault verification successful. <<<\n", flush=True)
         return 0
     else:
         print("\n>>> WARNING: One or more tests failed. Check logs above. <<<\n", flush=True)
