@@ -91,9 +91,11 @@ def get_vector_store(session_id: Any = "default") -> Chroma:
 
 def clean_extracted_text(text: str, is_pdf: bool = False) -> str:
     """
-    Sanitizes extracted document text.
-    For Markdown and plain text (is_pdf=False), preserves lists, newlines, and code blocks.
-    For PDFs (is_pdf=True), conservatively repairs word-fragmented lines caused by table/column extraction.
+    Sanitizes extracted document text preserving structure:
+    - Normalizes Unicode spaces, bullets, and line endings.
+    - For non-PDFs (Markdown, TXT), strictly preserves list markers, indentation, and structure.
+    - For PDFs (is_pdf=True), unwraps artificial soft line breaks within paragraphs,
+      re-unites hyphenated words, and preserves true paragraph breaks (\n\n) and bullet lists.
     """
     if not text:
         return ""
@@ -106,40 +108,53 @@ def clean_extracted_text(text: str, is_pdf: bool = False) -> str:
         collapsed = re.sub(r'[ \t]+', ' ', text)
         return re.sub(r'\n{3,}', '\n\n', collapsed).strip()
 
-    # For PDF text, normalize bullet points and empty lines
+    # For PDF text:
+    # 1. Normalize bullet point characters
     text = text.replace('\u25cf', '- ').replace('\u2022', '- ')
-    text = re.sub(r'\n[ \t]*\n', '\n', text)
 
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    if not lines:
-        return ""
+    # 2. Re-unite hyphenated words broken across line wraps (e.g. "distri-\nbuted" -> "distributed")
+    text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
 
-    avg_words = sum(len(line.split()) for line in lines) / len(lines)
-    if avg_words >= 3.5:
-        collapsed = re.sub(r'[ \t]+', ' ', text)
-        return re.sub(r'\n{3,}', '\n\n', collapsed).strip()
+    # 3. Split by true paragraph breaks (two or more newlines)
+    raw_paragraphs = re.split(r'\n\s*\n', text)
+    cleaned_paragraphs = []
 
-    bullet_prefixes = ('- ', '* ', '+ ')
-    merged_lines = []
-    current_chunk = []
+    bullet_prefixes = ('- ', '* ', '+ ', '• ')
 
-    for line in lines:
-        is_bullet = any(line.startswith(p) for p in bullet_prefixes)
-        is_numbered = bool(re.match(r'^(?:[0-9]+[.)]|[a-zA-Z][.)]|[ivxIVX]+[.)])', line))
+    for para in raw_paragraphs:
+        para = para.strip()
+        if not para:
+            continue
 
-        if (is_bullet or is_numbered) and current_chunk:
-            merged_lines.append(" ".join(current_chunk))
-            current_chunk = [line]
-        elif current_chunk and current_chunk[-1].endswith(('.', ':', '?', '!')) and len(current_chunk) >= 8:
-            merged_lines.append(" ".join(current_chunk))
-            current_chunk = [line]
-        else:
-            current_chunk.append(line)
+        lines = [line.strip() for line in para.split('\n') if line.strip()]
+        if not lines:
+            continue
 
-    if current_chunk:
-        merged_lines.append(" ".join(current_chunk))
+        merged_lines = []
+        for line in lines:
+            is_bullet = any(line.startswith(p) for p in bullet_prefixes)
+            is_numbered = bool(re.match(r'^(?:[0-9]+[.)]|[a-zA-Z][.)]|[ivxIVX]+[.)])', line))
+            is_header = line.startswith('#')
 
-    return "\n".join(merged_lines)
+            if is_bullet or is_numbered or is_header:
+                merged_lines.append(line)
+            else:
+                # Merge soft line wrap with previous line if it was part of the same paragraph text
+                if (
+                    merged_lines 
+                    and not any(merged_lines[-1].startswith(p) for p in bullet_prefixes)
+                    and not bool(re.match(r'^(?:[0-9]+[.)]|[a-zA-Z][.)])', merged_lines[-1]))
+                    and not merged_lines[-1].startswith('#')
+                ):
+                    merged_lines[-1] += " " + line
+                else:
+                    merged_lines.append(line)
+
+        cleaned_paragraphs.append("\n".join(merged_lines))
+
+    result = "\n\n".join(cleaned_paragraphs)
+    result = re.sub(r'[ \t]+', ' ', result)
+    return result.strip()
 
 
 def load_document_file(file_path: str, filename: str):
