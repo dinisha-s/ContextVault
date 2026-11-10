@@ -155,10 +155,7 @@ def synthesize_extractive_answer(citations: List[dict]) -> Tuple[str, str]:
         quoted_content = "\n>\n".join(formatted_paras)
         summary_lines.append(f"#### 📄 {src}{loc}{score_info}\n{quoted_content}\n")
 
-    summary_lines.append(
-        "---\n*💡 Tip: For generative AI answers synthesizing across multiple passages, configure an `OPENAI_API_KEY` or start a local `Ollama` instance in `backend/.env`.*"
-    )
-    return "\n".join(summary_lines), "ContextVault Grounded Fallback"
+    return "\n".join(summary_lines).strip(), "ContextVault Grounded Fallback"
 
 
 def generate_llm_answer(query: str, context: str, citations: List[dict]) -> Tuple[str, str]:
