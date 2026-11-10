@@ -16,7 +16,10 @@ export default function Sidebar({
   documents, 
   onUploadSuccess, 
   onResetSuccess,
-  apiBaseUrl 
+  apiBaseUrl,
+  config = {},
+  sessionId = 'default',
+  apiKey = ''
 }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -24,9 +27,33 @@ export default function Sidebar({
   const [isResetting, setIsResetting] = useState(false);
   const [deletingFile, setDeletingFile] = useState(null);
 
+  const maxUploadMb = config?.max_upload_size_mb || 10;
+  const embeddingModel = config?.embedding_model || 'all-MiniLM-L6-v2';
+  const llmProvider = config?.llm_provider || 'auto';
+
+  const getRequestHeaders = () => {
+    const headers = {
+      'X-Session-ID': sessionId,
+    };
+    if (apiKey) {
+      headers['X-API-Key'] = apiKey;
+    }
+    return headers;
+  };
+
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
-      setSelectedFile(e.target.files[0]);
+      const file = e.target.files[0];
+      const maxBytes = maxUploadMb * 1024 * 1024;
+      if (file.size > maxBytes) {
+        setUploadStatus({
+          type: 'error',
+          message: `File exceeds the ${maxUploadMb}MB size limit (${(file.size / (1024 * 1024)).toFixed(1)}MB). Please choose a smaller file.`
+        });
+        setSelectedFile(null);
+        return;
+      }
+      setSelectedFile(file);
       setUploadStatus(null);
     }
   };
@@ -44,12 +71,13 @@ export default function Sidebar({
     try {
       const response = await fetch(`${apiBaseUrl}/upload`, {
         method: 'POST',
+        headers: getRequestHeaders(),
         body: formData,
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Upload failed');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Upload failed with status ${response.status}`);
       }
 
       const data = await response.json();
@@ -74,24 +102,31 @@ export default function Sidebar({
   };
 
   const handleReset = async () => {
-    if (!window.confirm("Are you sure you want to clear the vector database and all indexed documents?")) {
+    if (!window.confirm("Are you sure you want to clear your session's vector database and all indexed documents?")) {
       return;
     }
 
     setIsResetting(true);
     try {
-      const res = await fetch(`${apiBaseUrl}/reset`, { method: 'POST' });
+      const res = await fetch(`${apiBaseUrl}/reset`, { 
+        method: 'POST',
+        headers: getRequestHeaders()
+      });
+      
       if (res.ok) {
         setUploadStatus({
           type: 'success',
           message: 'Vector database reset successfully.'
         });
         onResetSuccess();
+      } else {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Reset failed with status ${res.status}`);
       }
     } catch (err) {
       setUploadStatus({
         type: 'error',
-        message: 'Failed to reset vector database.'
+        message: err.message || 'Failed to reset vector database.'
       });
     } finally {
       setIsResetting(false);
@@ -108,6 +143,7 @@ export default function Sidebar({
     try {
       const res = await fetch(`${apiBaseUrl}/documents/${encodeURIComponent(filename)}`, {
         method: 'DELETE',
+        headers: getRequestHeaders()
       });
       if (res.ok) {
         setUploadStatus({
@@ -116,8 +152,8 @@ export default function Sidebar({
         });
         onUploadSuccess();
       } else {
-        const err = await res.json();
-        throw new Error(err.detail || 'Failed to delete document');
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to delete document (Status ${res.status})`);
       }
     } catch (err) {
       setUploadStatus({
@@ -178,7 +214,9 @@ export default function Sidebar({
               <span className="text-xs font-semibold text-[#0C3B2E] text-center truncate max-w-[200px]">
                 {selectedFile ? selectedFile.name : 'Choose file or drop here'}
               </span>
-              <span className="text-[10px] text-[#516D56] mt-0.5 font-medium">Supports multi-format up to 25MB</span>
+              <span className="text-[10px] text-[#516D56] mt-0.5 font-medium">
+                Supports multi-format up to {maxUploadMb}MB
+              </span>
               <input 
                 id="file-upload-input"
                 type="file" 
@@ -299,11 +337,19 @@ export default function Sidebar({
       <div className="p-4 bg-[#F0F4F1] border-t border-[#BB8A52]/20 shadow-[0_-4px_12px_rgba(208,221,210,0.3)] space-y-2">
         <div className="flex items-center justify-between text-[11px] text-[#516D56] font-medium">
           <span>Embeddings:</span>
-          <span className="text-[#0C3B2E] font-mono font-semibold">all-MiniLM-L6-v2</span>
+          <span className="text-[#0C3B2E] font-mono font-semibold truncate max-w-[150px]" title={embeddingModel}>
+            {embeddingModel}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-[11px] text-[#516D56] font-medium">
+          <span>LLM Provider:</span>
+          <span className="text-[#0C3B2E] font-mono font-semibold capitalize">
+            {llmProvider}
+          </span>
         </div>
         <div className="flex items-center justify-between text-[11px] text-[#516D56] font-medium">
           <span>Vector Store:</span>
-          <span className="text-[#0C3B2E] font-semibold font-mono">ChromaDB</span>
+          <span className="text-[#0C3B2E] font-semibold font-mono">ChromaDB (Cosine)</span>
         </div>
         <div className="pt-2 border-t border-[#BB8A52]/20 text-[10px] text-[#516D56] font-medium flex justify-between">
           <span>ContextVault Workstation</span>

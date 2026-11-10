@@ -1,7 +1,15 @@
-import React from 'react';
-import { X, FileText, Layers, Hash, Bookmark } from 'lucide-react';
+import React, { useEffect, useRef } from 'react';
+import { X, FileText, Layers, Hash, Bookmark, Percent, CheckCircle } from 'lucide-react';
 
-export default function CitationDrawer({ isOpen, onClose, citations, activeCitationId }) {
+export default function CitationDrawer({ isOpen, onClose, citations = [], activeCitationId = null }) {
+  const activeItemRef = useRef(null);
+
+  useEffect(() => {
+    if (activeCitationId && activeItemRef.current) {
+      activeItemRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeCitationId, isOpen]);
+
   if (!isOpen) return null;
 
   return (
@@ -35,12 +43,17 @@ export default function CitationDrawer({ isOpen, onClose, citations, activeCitat
         ) : (
           citations.map((c) => {
             const isTarget = activeCitationId === c.id;
+            const simPercentage = c.similarity !== undefined && c.similarity !== null
+              ? Math.round(c.similarity * 100)
+              : (c.score !== null ? Math.max(0, Math.round((1 - c.score) * 100)) : null);
+
             return (
               <div
                 key={c.id}
+                ref={isTarget ? activeItemRef : null}
                 className={`rounded-2xl p-4 transition-all duration-200 bg-[#F5F8F5] ${
                   isTarget
-                    ? 'shadow-[6px_6px_16px_rgba(12,59,46,0.25),-6px_-6px_16px_#FFFFFF] border-2 border-[#0C3B2E]'
+                    ? 'ring-2 ring-[#FFBA00] border-2 border-[#0C3B2E] shadow-[8px_8px_20px_rgba(12,59,46,0.3),-6px_-6px_16px_#FFFFFF]'
                     : 'shadow-[5px_5px_12px_#D0DDD2,-5px_-5px_12px_#FFFFFF] border border-[#BB8A52]/25 hover:shadow-[6px_6px_14px_#D0DDD2,-6px_-6px_14px_#FFFFFF]'
                 }`}
               >
@@ -49,20 +62,32 @@ export default function CitationDrawer({ isOpen, onClose, citations, activeCitat
                     <FileText className="w-3.5 h-3.5 text-[#BB8A52]" />
                     <span className="truncate max-w-[200px]" title={c.source}>{c.source}</span>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#E7EFE9] text-[#0C3B2E] shadow-[inset_1.5px_1.5px_3px_#D0DDD2,inset_-1.5px_-1.5px_3px_#FFFFFF] border border-[#6D9773]/30 font-semibold">
-                    Chunk #{c.id}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {isTarget && (
+                      <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 rounded bg-[#0C3B2E] text-[#FFBA00] flex items-center gap-1">
+                        <CheckCircle className="w-2.5 h-2.5" /> Selected
+                      </span>
+                    )}
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-[#E7EFE9] text-[#0C3B2E] shadow-[inset_1.5px_1.5px_3px_#D0DDD2,inset_-1.5px_-1.5px_3px_#FFFFFF] border border-[#6D9773]/30 font-semibold">
+                      Chunk #{c.id}
+                    </span>
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-3 text-[11px] text-[#516D56] mb-3 font-mono font-medium">
+                <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#516D56] mb-3 font-mono font-medium">
                   {c.page && (
                     <span className="flex items-center gap-1">
                       <Layers className="w-3 h-3 text-[#6D9773]" /> Page {c.page}
                     </span>
                   )}
                   {c.score !== null && (
-                    <span className="flex items-center gap-1">
-                      <Hash className="w-3 h-3 text-[#BB8A52]" /> Distance: {c.score}
+                    <span className="flex items-center gap-1" title="Chroma cosine distance (0=identical, 1=orthogonal, 2=opposite)">
+                      <Hash className="w-3 h-3 text-[#BB8A52]" /> Dist: {typeof c.score === 'number' ? c.score.toFixed(3) : c.score}
+                    </span>
+                  )}
+                  {simPercentage !== null && (
+                    <span className="flex items-center gap-1 text-[#0C3B2E] font-semibold" title="Calculated Cosine Similarity = 1 - Distance">
+                      <Percent className="w-3 h-3 text-[#6D9773]" /> {simPercentage}% Match
                     </span>
                   )}
                 </div>
@@ -78,7 +103,7 @@ export default function CitationDrawer({ isOpen, onClose, citations, activeCitat
       </div>
 
       <div className="p-3.5 border-t border-[#BB8A52]/20 bg-[#F0F4F1] shadow-[0_-2px_8px_rgba(208,221,210,0.2)] text-[11px] text-[#516D56] font-semibold text-center">
-        Extracted via ChromaDB Cosine Similarity
+        Retrieved via ChromaDB Cosine Distance Space (HNSW)
       </div>
     </div>
   );
