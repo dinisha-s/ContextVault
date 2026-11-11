@@ -5,6 +5,7 @@ with timeouts, structured logging, and zero secret leakage.
 """
 
 import os
+import re
 import json
 import logging
 import urllib.request

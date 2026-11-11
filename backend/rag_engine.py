@@ -94,8 +94,11 @@ def clean_extracted_text(text: str, is_pdf: bool = False) -> str:
     Sanitizes extracted document text preserving structure:
     - Normalizes Unicode spaces, bullets, and line endings.
     - For non-PDFs (Markdown, TXT), strictly preserves list markers, indentation, and structure.
-    - For PDFs (is_pdf=True), unwraps artificial soft line breaks within paragraphs,
-      re-unites hyphenated words, and preserves true paragraph breaks (\n\n) and bullet lists.
+    - For PDFs (is_pdf=True):
+      1. Automatically detects and heals word-level fragmentation (where every word is split by \n or \n \n).
+      2. Re-unites hyphenated words broken across line wraps (e.g. "distri-\nbuted" -> "distributed").
+      3. Unwraps artificial soft line breaks within paragraphs.
+      4. Preserves true paragraph boundaries (numbered questions, section headers, bullet lists).
     """
     if not text:
         return ""
@@ -108,14 +111,34 @@ def clean_extracted_text(text: str, is_pdf: bool = False) -> str:
         collapsed = re.sub(r'[ \t]+', ' ', text)
         return re.sub(r'\n{3,}', '\n\n', collapsed).strip()
 
-    # For PDF text:
+    # --- PDF-Specific Intelligent Processing ---
     # 1. Normalize bullet point characters
-    text = text.replace('\u25cf', '- ').replace('\u2022', '- ')
+    text = text.replace('\u25cf', '• ').replace('\u2022', '• ')
 
     # 2. Re-unite hyphenated words broken across line wraps (e.g. "distri-\nbuted" -> "distributed")
     text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
 
-    # 3. Split by true paragraph breaks (two or more newlines)
+    # 3. Detect and heal severe word-level fragmentation (common in Word-exported PDFs or table layouts)
+    raw_lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if not raw_lines:
+        return ""
+
+    avg_words_per_line = sum(len(l.split()) for l in raw_lines) / len(raw_lines)
+    if avg_words_per_line < 3.0 and len(raw_lines) >= 4:
+        # Collapse all whitespace and artificial line wraps between words into single spaces
+        text = re.sub(r'\s+', ' ', text)
+        # Re-insert real paragraph breaks before numbered questions (e.g., 1), 7), 10), or i), ii))
+        text = re.sub(r'(?:^|\s)(\d{1,3}\)|\b[ivxIVX]+\))(?=\s)', r'\n\n\1', text)
+        # Re-insert breaks before bullet items (without breaking hyphenated words like Cortex-A8)
+        text = re.sub(r'(?:^|\s)[•\*\-]\s+(?=[A-Za-z0-9])', r'\n- ', text)
+        # Re-insert breaks before shell commands
+        text = re.sub(r'(?:^|\s)(\$\s+[a-zA-Z])', r'\n\1', text)
+        # Re-insert breaks before common section titles
+        text = re.sub(r'(?:^|\s)(Big Questions:|Short Questions:|Questions:|Overview:|Key Features:)', r'\n\n### \1\n', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    # 4. Standard PDF unwrapping for regular paragraphs (soft line wraps)
     raw_paragraphs = re.split(r'\n\s*\n', text)
     cleaned_paragraphs = []
 
@@ -278,12 +301,13 @@ def query_rag(user_query: str, top_k: int = 4, session_id: str = "default") -> D
         cosine_distance = round(scores[idx], 4) if idx < len(scores) else None
         cosine_similarity = round(max(0.0, 1.0 - scores[idx]), 4) if idx < len(scores) else None
 
+        is_pdf_doc = src.lower().endswith(".pdf")
         citations.append({
             "id": idx + 1,
             "source": src,
             "page": page,
             "chunk_index": chunk_idx,
-            "content": clean_extracted_text(doc.page_content, is_pdf=False),
+            "content": clean_extracted_text(doc.page_content, is_pdf=is_pdf_doc),
             "score": cosine_distance,
             "similarity": cosine_similarity,
             "metric": "cosine"
